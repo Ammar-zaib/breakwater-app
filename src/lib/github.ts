@@ -57,9 +57,20 @@ export async function fetchVendorRelevantFiles(
       headers: headers(accessToken),
     });
     // Code search requires the repo to be indexed; a 422/403 here (rate
-    // limits, empty repo) shouldn't kill the whole scan.
-    if (!res.ok) continue;
+    // limits, empty repo) shouldn't kill the whole scan. Logged (not
+    // swallowed silently) so a scan that comes back with zero files has a
+    // trace in the server logs explaining whether that's because nothing
+    // matched or because the search request itself failed.
+    if (!res.ok) {
+      console.error(
+        `[github.fetchVendorRelevantFiles] search/code failed for term "${term}" on ${fullName}: ${res.status} ${await res.text()}`
+      );
+      continue;
+    }
     const data = (await res.json()) as { items?: { path: string }[] };
+    console.log(
+      `[github.fetchVendorRelevantFiles] term "${term}" on ${fullName}: ${data.items?.length ?? 0} result(s)`
+    );
     for (const item of data.items ?? []) {
       foundPaths.add(item.path);
       if (foundPaths.size >= maxFiles) break;
