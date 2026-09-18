@@ -11,6 +11,13 @@ import { users, accounts, sessions, verificationTokens } from "@/db/schema";
  * instead — see README if you want to narrow this.
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // Required for self-hosted deployments behind a reverse proxy (Coolify's
+  // Traefik, in our case). Without this, Auth.js refuses every request with
+  // an "UntrustedHost" error because it can't otherwise verify the Host
+  // header it's receiving is legitimate. Vercel/Netlify set this
+  // automatically via their own platform env vars, which is why this
+  // wasn't needed there.
+  trustHost: true,
   adapter: DrizzleAdapter(db, {
     usersTable: users,
     accountsTable: accounts,
