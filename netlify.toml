@@ -1,0 +1,11 @@
+# Netlify config. The Next.js build itself needs no special settings —
+# Netlify auto-detects Next.js 13.5+ and installs its own Next.js runtime
+# to handle SSR, route handlers, and server actions. This file only needs
+# to point Netlify at the custom scheduled function that replaces
+# vercel.json's cron entry (vercel.json is unused here — harmless to leave
+# in the repo, just ignored by Netlify).
+[build]
+  command = "npm run build"
+
+[functions]
+  directory = "netlify/functions"

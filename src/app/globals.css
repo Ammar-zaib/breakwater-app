@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/*
+  Breakwater — "storm tracking" identity.
+  Dark-only maritime palette: deep navy water tones with a brass/lighthouse
+  accent. No light-mode branch — the product is designed dark by intent,
+  not as a fallback.
+*/
+:root {
+  --abyss: #050d13;
+  --bg: #0a1b24;
+  --surface: #0f2632;
+  --surface-2: #15323f;
+  --ink: #eef6f4;
+  --ink-dim: #8aa9b0;
+  --line: #1e3f4d;
+  --line-soft: rgba(134, 168, 175, 0.16);
+  --accent: #e5b64a;
+  --accent-dim: #a98737;
+  --accent-ink: #1a1200;
+  --high: #ff7a6b;
+  --high-bg: rgba(255, 122, 107, 0.12);
+  --medium: #f0a23e;
+  --medium-bg: rgba(240, 162, 62, 0.12);
+  --low: #52d3a6;
+  --low-bg: rgba(82, 211, 166, 0.12);
+}
+
+@theme inline {
+  --color-abyss: var(--abyss);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-ink: var(--accent-ink);
+  --color-high: var(--high);
+  --color-high-bg: var(--high-bg);
+  --color-medium: var(--medium);
+  --color-medium-bg: var(--medium-bg);
+  --color-low: var(--low);
+  --color-low-bg: var(--low-bg);
+  --font-sans: var(--font-instrument-sans);
+  --font-mono: var(--font-plex-mono);
+  --font-display: var(--font-fraunces);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  position: relative;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: var(--abyss);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 20px;
+  border: 3px solid var(--abyss);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
+
+/* Faint film-grain over the whole app for depth — subtle, not decorative noise. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@keyframes bw-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 6px rgba(229, 182, 74, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(229, 182, 74, 0.06);
+  }
+}
+@keyframes bw-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
