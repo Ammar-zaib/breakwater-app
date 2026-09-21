@@ -5,7 +5,7 @@ import { repos, vendorWatches, scans, users } from "@/db/schema";
 import { getCurrentUser } from "@/lib/current-user";
 import { getRoleForOwner, roleAtLeast } from "@/lib/access";
 import { PageHeader, Card } from "@/components/ui";
-import { ScanNowButton, DisconnectButton, ScanHistory } from "@/components/scan-controls";
+import { ScanNowButton, DisconnectButton, ScanHistory, PrScanToggle } from "@/components/scan-controls";
 import { VENDOR_LABELS } from "@/lib/vendors";
 
 export default async function RepositoryDetailPage({
@@ -42,7 +42,17 @@ export default async function RepositoryDetailPage({
         description={`Watching ${watch ? VENDOR_LABELS[watch.vendor] : "no vendor yet"} · scans run automatically every day, or on demand.${
           repo.userId !== user.id ? ` · shared by ${owner?.email ?? owner?.name ?? "the owner"}` : ""
         }`}
-        action={watch && canEdit ? <ScanNowButton repoId={repo.id} vendor={watch.vendor} /> : undefined}
+        action={
+          <div className="flex items-center gap-4">
+            <a
+              href={`/dashboard/export?repoId=${repo.id}`}
+              className="text-sm font-medium text-ink-dim hover:text-ink transition-colors"
+            >
+              Export CSV
+            </a>
+            {watch && canEdit ? <ScanNowButton repoId={repo.id} vendor={watch.vendor} /> : null}
+          </div>
+        }
       />
       <div className="p-8 space-y-6">
         <Card className="p-5">
@@ -58,7 +68,8 @@ export default async function RepositoryDetailPage({
         </Card>
 
         {canManage ? (
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between">
+            <PrScanToggle repoId={repo.id} enabled={repo.prScanEnabled} />
             <DisconnectButton repoId={repo.id} />
           </div>
         ) : null}

@@ -39,6 +39,17 @@ const NAV = [
     ),
   },
   {
+    href: "/dashboard/audit",
+    label: "Audit log",
+    icon: (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+        <path d="M6 3h9l5 5v13H6V3Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M15 3v5h5" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M9 13h6M9 17h6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
     href: "/dashboard/settings",
     label: "Settings",
     icon: (

@@ -76,7 +76,15 @@ export const verificationTokens = pgTable(
  * Breakwater domain tables.
  */
 
-export const VENDORS = ["stripe", "twilio", "openai", "shopify", "slack"] as const;
+export const VENDORS = [
+  "stripe",
+  "twilio",
+  "openai",
+  "shopify",
+  "slack",
+  "aws",
+  "paypal",
+] as const;
 export type Vendor = (typeof VENDORS)[number];
 
 export const repos = pgTable("repo", {
@@ -91,6 +99,11 @@ export const repos = pgTable("repo", {
   defaultBranch: text("default_branch").notNull().default("main"),
   private: boolean("private").notNull().default(false),
   connectedAt: timestamp("connected_at").defaultNow().notNull(),
+  // PR-triggered scanning: when enabled, a GitHub webhook is registered on
+  // the repo (id stored here so we can unregister it later) and incoming
+  // pull_request events run a PR-scoped scan that comments findings inline.
+  prScanEnabled: boolean("pr_scan_enabled").notNull().default(false),
+  githubWebhookId: text("github_webhook_id"),
 });
 
 export const vendorWatches = pgTable("vendor_watch", {
@@ -116,7 +129,7 @@ export const scans = pgTable("scan", {
   overallRisk: text("overall_risk").notNull(), // 'high' | 'medium' | 'low'
   summary: text("summary").notNull(),
   filesScanned: jsonb("files_scanned").$type<string[]>().notNull(),
-  triggeredBy: text("triggered_by").notNull(), // 'manual' | 'cron'
+  triggeredBy: text("triggered_by").notNull(), // 'manual' | 'cron' | 'pr'
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -138,6 +151,13 @@ export const findings = pgTable("finding", {
   prStatus: text("pr_status").notNull().default("none"), // 'none' | 'generating' | 'open' | 'error'
   prUrl: text("pr_url"),
   prError: text("pr_error"),
+  // Accept/dismiss: a reviewed finding an editor+ has decided not to act on
+  // (accepted risk, false positive, etc). Accepted findings stay in history
+  // but are excluded from "effective risk" counts on dashboards.
+  status: text("status").notNull().default("open"), // 'open' | 'accepted'
+  acceptedBy: text("accepted_by").references(() => users.id, { onDelete: "set null" }),
+  acceptedAt: timestamp("accepted_at"),
+  acceptedReason: text("accepted_reason"),
 });
 
 /**
@@ -189,4 +209,31 @@ export const alertLogs = pgTable("alert_log", {
     .references(() => scans.id, { onDelete: "cascade" }),
   channel: text("channel").notNull().default("email"),
   sentAt: timestamp("sent_at").defaultNow().notNull(),
+});
+
+/**
+ * Audit trail for anything a user does that changes account state or repo
+ * access — connecting/disconnecting repos, triggering scans, opening fix
+ * PRs, changing team roles, creating/revoking API keys, accepting findings,
+ * toggling PR scans, updating settings. `ownerId` is whose account the
+ * action happened under (so a team member's actions show up in the owner's
+ * log too); `actorUserId` is who actually did it. Logs are kept even if the
+ * actor is later removed from the team or deleted, so `actorUserId` doesn't
+ * cascade-delete — only `ownerId` does, since the whole log belongs to that
+ * account.
+ */
+export const auditLogs = pgTable("audit_log", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  ownerId: text("owner_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  actorUserId: text("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  actorEmail: text("actor_email"), // snapshot, in case the user/email later changes
+  action: text("action").notNull(), // e.g. 'repo.connect', 'finding.accept', 'team.role_change'
+  targetType: text("target_type"), // e.g. 'repo', 'finding', 'team_member', 'api_key'
+  targetId: text("target_id"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });

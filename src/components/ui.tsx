@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { openFixPR } from "@/app/actions";
+import { openFixPR, acceptFinding, reopenFinding } from "@/app/actions";
 
 type Risk = "high" | "medium" | "low";
 
@@ -87,6 +87,8 @@ export function FindingCard({
     prStatus?: string | null;
     prUrl?: string | null;
     prError?: string | null;
+    status?: string | null;
+    acceptedReason?: string | null;
   };
   /** Viewers can see PR status but not trigger a new fix PR. */
   canEdit?: boolean;
@@ -96,6 +98,9 @@ export function FindingCard({
   const [prStatus, setPrStatus] = useState(finding.prStatus ?? "none");
   const [prUrl, setPrUrl] = useState(finding.prUrl ?? null);
   const [prError, setPrError] = useState(finding.prError ?? null);
+  const [status, setStatus] = useState(finding.status ?? "open");
+  const [acceptedReason, setAcceptedReason] = useState(finding.acceptedReason ?? null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   function handleOpenFixPR() {
     setPrStatus("generating");
@@ -112,14 +117,56 @@ export function FindingCard({
     });
   }
 
+  function handleAccept() {
+    const reason = window.prompt(
+      "Optional note on why this risk is being accepted (shown in the audit log):",
+      ""
+    );
+    if (reason === null) return; // cancelled
+    setAcceptError(null);
+    startTransition(async () => {
+      try {
+        await acceptFinding(finding.id, reason);
+        setStatus("accepted");
+        setAcceptedReason(reason.trim() || null);
+      } catch (e) {
+        setAcceptError(e instanceof Error ? e.message : "Couldn't accept this finding.");
+      }
+    });
+  }
+
+  function handleReopen() {
+    setAcceptError(null);
+    startTransition(async () => {
+      try {
+        await reopenFinding(finding.id);
+        setStatus("open");
+        setAcceptedReason(null);
+      } catch (e) {
+        setAcceptError(e instanceof Error ? e.message : "Couldn't reopen this finding.");
+      }
+    });
+  }
+
   return (
-    <div className="grid grid-cols-[4px_1fr] gap-3.5 border border-line rounded-xl overflow-hidden bg-surface">
-      <div className={SEV_STRIPE[sev]} />
+    <div
+      className={`grid grid-cols-[4px_1fr] gap-3.5 border border-line rounded-xl overflow-hidden bg-surface ${
+        status === "accepted" ? "opacity-70" : ""
+      }`}
+    >
+      <div className={status === "accepted" ? "bg-ink-dim" : SEV_STRIPE[sev]} />
       <div className="py-3 pr-4">
         <div className="flex items-baseline justify-between gap-2">
           <span className="font-medium text-sm">{finding.title}</span>
-          <span className={`font-mono text-[10px] font-bold uppercase tracking-wide shrink-0 ${SEV_TEXT[sev]}`}>
-            {sev}
+          <span className="flex items-center gap-1.5 shrink-0">
+            {status === "accepted" ? (
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-dim">
+                accepted risk
+              </span>
+            ) : null}
+            <span className={`font-mono text-[10px] font-bold uppercase tracking-wide ${SEV_TEXT[sev]}`}>
+              {sev}
+            </span>
           </span>
         </div>
         {finding.filePath ? (
@@ -135,6 +182,9 @@ export function FindingCard({
           <span className="font-semibold text-accent">Fix: </span>
           {finding.recommendation}
         </p>
+        {status === "accepted" && acceptedReason ? (
+          <p className="mt-2 text-[12px] text-ink-dim italic">Accepted: {acceptedReason}</p>
+        ) : null}
 
         {finding.filePath && (canEdit || (prStatus === "open" && prUrl)) ? (
           <div className="mt-3 pt-3 border-t border-line flex items-center gap-3 flex-wrap">
@@ -147,7 +197,7 @@ export function FindingCard({
               >
                 View fix PR ↗
               </a>
-            ) : canEdit ? (
+            ) : canEdit && status !== "accepted" ? (
               <button
                 onClick={handleOpenFixPR}
                 disabled={isPending || prStatus === "generating"}
@@ -163,11 +213,34 @@ export function FindingCard({
             {canEdit && prStatus === "error" && prError ? (
               <span className="text-[11px] text-high">{prError}</span>
             ) : null}
-            {canEdit && prStatus !== "open" ? (
+            {canEdit && prStatus !== "open" && status !== "accepted" ? (
               <span className="text-[10.5px] text-ink-dim">
                 Asks Claude to fix this file and opens a real PR for you to review — nothing merges automatically.
               </span>
             ) : null}
+          </div>
+        ) : null}
+
+        {canEdit ? (
+          <div className="mt-3 pt-3 border-t border-line flex items-center gap-3 flex-wrap">
+            {status === "accepted" ? (
+              <button
+                onClick={handleReopen}
+                disabled={isPending}
+                className="text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+              >
+                Reopen
+              </button>
+            ) : (
+              <button
+                onClick={handleAccept}
+                disabled={isPending}
+                className="text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+              >
+                Accept risk
+              </button>
+            )}
+            {acceptError ? <span className="text-[11px] text-high">{acceptError}</span> : null}
           </div>
         ) : null}
       </div>

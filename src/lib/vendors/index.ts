@@ -4,6 +4,8 @@ import { TWILIO_BRIEFING, TWILIO_SEARCH_TERMS } from "./twilio";
 import { OPENAI_BRIEFING, OPENAI_SEARCH_TERMS } from "./openai";
 import { SHOPIFY_BRIEFING, SHOPIFY_SEARCH_TERMS } from "./shopify";
 import { SLACK_BRIEFING, SLACK_SEARCH_TERMS } from "./slack";
+import { AWS_BRIEFING, AWS_SEARCH_TERMS } from "./aws";
+import { PAYPAL_BRIEFING, PAYPAL_SEARCH_TERMS } from "./paypal";
 
 /**
  * Every vendor Breakwater watches, in one place. Adding a vendor means: a
@@ -16,6 +18,8 @@ export const VENDOR_BRIEFINGS: Record<Vendor, string> = {
   openai: OPENAI_BRIEFING,
   shopify: SHOPIFY_BRIEFING,
   slack: SLACK_BRIEFING,
+  aws: AWS_BRIEFING,
+  paypal: PAYPAL_BRIEFING,
 };
 
 export const VENDOR_SEARCH_TERMS: Record<Vendor, string[]> = {
@@ -24,6 +28,8 @@ export const VENDOR_SEARCH_TERMS: Record<Vendor, string[]> = {
   openai: OPENAI_SEARCH_TERMS,
   shopify: SHOPIFY_SEARCH_TERMS,
   slack: SLACK_SEARCH_TERMS,
+  aws: AWS_SEARCH_TERMS,
+  paypal: PAYPAL_SEARCH_TERMS,
 };
 
 export const VENDOR_LABELS: Record<Vendor, string> = {
@@ -32,4 +38,6 @@ export const VENDOR_LABELS: Record<Vendor, string> = {
   openai: "OpenAI",
   shopify: "Shopify",
   slack: "Slack",
+  aws: "AWS SDK",
+  paypal: "PayPal",
 };

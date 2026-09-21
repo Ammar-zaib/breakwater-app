@@ -91,14 +91,76 @@ export async function fetchVendorRelevantFiles(
 export async function fetchFileContent(
   accessToken: string,
   fullName: string,
-  path: string
+  path: string,
+  ref?: string
 ): Promise<string | null> {
-  const res = await fetch(
-    `${GITHUB_API}/repos/${fullName}/contents/${encodeURIComponent(path)}`,
-    { headers: headers(accessToken) }
-  );
+  const url = `${GITHUB_API}/repos/${fullName}/contents/${encodeURIComponent(path)}${
+    ref ? `?ref=${encodeURIComponent(ref)}` : ""
+  }`;
+  const res = await fetch(url, { headers: headers(accessToken) });
   if (!res.ok) return null;
   const data = (await res.json()) as { content?: string; encoding?: string };
   if (!data.content || data.encoding !== "base64") return null;
   return Buffer.from(data.content, "base64").toString("utf8");
+}
+
+export type PullRequestFile = {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed" | "copied" | "changed" | "unchanged";
+};
+
+/** Files changed by a pull request (paths + change status), most-changed first per GitHub's default ordering. */
+export async function fetchPullRequestFiles(
+  accessToken: string,
+  fullName: string,
+  prNumber: number
+): Promise<PullRequestFile[]> {
+  const res = await fetch(`${GITHUB_API}/repos/${fullName}/pulls/${prNumber}/files?per_page=100`, {
+    headers: headers(accessToken),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error listing PR files: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/**
+ * Registers a webhook on the repo for pull_request events, pointed at
+ * Breakwater's webhook endpoint. Only called from togglePrScan when a repo
+ * admin explicitly enables PR-triggered scanning — never automatically.
+ * Returns the webhook's id (needed later to remove it if the user disables
+ * the feature or disconnects the repo).
+ */
+export async function createRepoWebhook(
+  accessToken: string,
+  fullName: string,
+  webhookUrl: string,
+  secret: string
+): Promise<string> {
+  const res = await fetch(`${GITHUB_API}/repos/${fullName}/hooks`, {
+    method: "POST",
+    headers: { ...headers(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "web",
+      active: true,
+      events: ["pull_request"],
+      config: { url: webhookUrl, content_type: "json", secret, insecure_ssl: "0" },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error creating webhook: ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { id: number };
+  return String(data.id);
+}
+
+/** Removes a previously-registered webhook. Safe to call even if it's already gone. */
+export async function deleteRepoWebhook(accessToken: string, fullName: string, webhookId: string): Promise<void> {
+  const res = await fetch(`${GITHUB_API}/repos/${fullName}/hooks/${webhookId}`, {
+    method: "DELETE",
+    headers: headers(accessToken),
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`GitHub API error deleting webhook: ${res.status} ${await res.text()}`);
+  }
 }

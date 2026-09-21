@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { triggerScan, disconnectRepo, getScanDetail } from "@/app/actions";
+import { triggerScan, disconnectRepo, getScanDetail, togglePrScan } from "@/app/actions";
 import { RiskPill, FindingCard } from "@/components/ui";
 import type { Vendor } from "@/db/schema";
 
@@ -55,6 +55,47 @@ export function DisconnectButton({ repoId }: { repoId: string }) {
   );
 }
 
+export function PrScanToggle({ repoId, enabled }: { repoId: string; enabled: boolean }) {
+  const [isPending, startTransition] = useTransition();
+  const [isEnabled, setIsEnabled] = useState(enabled);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  function handleToggle() {
+    const next = !isEnabled;
+    if (next && !confirm("Scan every pull request against this repo automatically and post the results as a PR comment?")) {
+      return;
+    }
+    setError(null);
+    startTransition(async () => {
+      try {
+        await togglePrScan(repoId, next);
+        setIsEnabled(next);
+        router.refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Couldn't update PR scanning.");
+      }
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={handleToggle}
+        disabled={isPending}
+        className={`text-xs font-semibold rounded-lg px-3 py-1.5 border transition-colors disabled:opacity-50 ${
+          isEnabled
+            ? "border-low/30 bg-low-bg text-low"
+            : "border-line text-ink-dim hover:text-ink hover:bg-surface-2"
+        }`}
+      >
+        {isPending ? "Updating…" : isEnabled ? "PR scanning: on" : "PR scanning: off"}
+      </button>
+      {error ? <span className="text-[11px] text-high">{error}</span> : null}
+    </div>
+  );
+}
+
 type ScanRow = {
   id: string;
   overallRisk: string;
@@ -74,6 +115,8 @@ type FindingRow = {
   prStatus?: string | null;
   prUrl?: string | null;
   prError?: string | null;
+  status?: string | null;
+  acceptedReason?: string | null;
 };
 
 export function ScanHistory({ scans, canEdit = true }: { scans: ScanRow[]; canEdit?: boolean }) {

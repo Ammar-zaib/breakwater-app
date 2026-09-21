@@ -3,9 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { eq, and, desc } from "drizzle-orm";
 import { db } from "@/db";
-import { repos, vendorWatches, scans, findings, users, teamMembers, apiKeys, type Vendor } from "@/db/schema";
+import { repos, vendorWatches, scans, findings, users, teamMembers, apiKeys, auditLogs, type Vendor } from "@/db/schema";
 import { getCurrentUser, getGitHubToken } from "@/lib/current-user";
-import { listUserRepos, fetchFileContent } from "@/lib/github";
+import { listUserRepos, fetchFileContent, createRepoWebhook, deleteRepoWebhook } from "@/lib/github";
 import { performScan } from "@/lib/scan-runner";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { sendAlertEmail } from "@/lib/email";
@@ -14,6 +14,7 @@ import { generateFix } from "@/lib/fix";
 import { openFixPullRequest } from "@/lib/github-write";
 import { getRoleForOwner, roleAtLeast, type AccessRole } from "@/lib/access";
 import { generateApiKey } from "@/lib/api-keys";
+import { logAudit } from "@/lib/audit";
 
 async function requireUser() {
   const user = await getCurrentUser();
@@ -82,6 +83,15 @@ export async function connectRepo(githubRepoId: string, fullName: string, defaul
     }
   }
 
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "repo.connect",
+    targetType: "repo",
+    targetId: repo.id,
+    metadata: { fullName: repo.fullName, vendor },
+  });
+
   revalidatePath("/dashboard/repositories");
   revalidatePath("/dashboard");
   return repo;
@@ -90,8 +100,16 @@ export async function connectRepo(githubRepoId: string, fullName: string, defaul
 /** Destructive, so it's gated at "admin" — the true owner or someone they've
  *  explicitly trusted with admin rights, not every editor on the team. */
 export async function disconnectRepo(repoId: string) {
-  const { repo } = await requireRepoAccess(repoId, "admin");
+  const { user, repo } = await requireRepoAccess(repoId, "admin");
   await db.delete(repos).where(eq(repos.id, repo.id));
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "repo.disconnect",
+    targetType: "repo",
+    targetId: repo.id,
+    metadata: { fullName: repo.fullName },
+  });
   revalidatePath("/dashboard/repositories");
 }
 
@@ -100,19 +118,28 @@ export async function disconnectRepo(repoId: string) {
  *  member triggers it — those credentials live on the account the repo
  *  belongs to, not on whoever happens to click the button. */
 export async function triggerScan(repoId: string, vendor: Vendor) {
-  const { repo } = await requireRepoAccess(repoId, "editor");
+  const { user, repo } = await requireRepoAccess(repoId, "editor");
   const [owner] = await db.select().from(users).where(eq(users.id, repo.userId));
   if (!owner?.anthropicApiKeyEncrypted) {
     throw new Error("The repository owner needs to add an Anthropic API key in Settings before scanning.");
   }
 
-  const { scanId } = await performScan({
+  const { scanId, report } = await performScan({
     userId: owner.id,
     anthropicApiKeyEncrypted: owner.anthropicApiKeyEncrypted,
     repoId: repo.id,
     repoFullName: repo.fullName,
     vendor,
     triggeredBy: "manual",
+  });
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "scan.trigger",
+    targetType: "repo",
+    targetId: repo.id,
+    metadata: { fullName: repo.fullName, vendor, overallRisk: report.overallRisk, findingsCount: report.findings.length },
   });
 
   revalidatePath("/dashboard");
@@ -127,6 +154,12 @@ export async function updateAnthropicKey(apiKey: string) {
     .update(users)
     .set({ anthropicApiKeyEncrypted: trimmed ? encryptSecret(trimmed) : null })
     .where(eq(users.id, user.id));
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "settings.anthropic_key_update",
+    metadata: { cleared: !trimmed },
+  });
   revalidatePath("/dashboard/settings");
 }
 
@@ -136,6 +169,11 @@ export async function updateAlertEmail(email: string) {
     .update(users)
     .set({ alertEmail: email.trim() || null })
     .where(eq(users.id, user.id));
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "settings.alert_email_update",
+  });
   revalidatePath("/dashboard/settings");
 }
 
@@ -148,6 +186,11 @@ export async function updateWebhookSettings(webhookUrl: string, slackWebhookUrl:
       slackWebhookUrl: slackWebhookUrl.trim() || null,
     })
     .where(eq(users.id, user.id));
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "settings.webhook_update",
+  });
   revalidatePath("/dashboard/settings");
 }
 
@@ -286,18 +329,165 @@ export async function openFixPR(findingId: string) {
       .update(findings)
       .set({ prStatus: "open", prUrl, prError: null })
       .where(eq(findings.id, findingId));
+
+    await logAudit({
+      ownerId: repo.userId,
+      actor: { id: user.id, email: user.email },
+      action: "finding.pr_open",
+      targetType: "finding",
+      targetId: finding.id,
+      metadata: { fullName: repo.fullName, filePath, prUrl },
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Something went wrong opening the fix PR.";
     await db
       .update(findings)
       .set({ prStatus: "error", prError: message })
       .where(eq(findings.id, findingId));
+    await logAudit({
+      ownerId: repo.userId,
+      actor: { id: user.id, email: user.email },
+      action: "finding.pr_open_failed",
+      targetType: "finding",
+      targetId: finding.id,
+      metadata: { fullName: repo.fullName, filePath, error: message },
+    });
     revalidatePath(`/dashboard/repositories/${repo.id}`);
     throw new Error(message);
   }
 
   revalidatePath(`/dashboard/repositories/${repo.id}`);
   return { prUrl };
+}
+
+/**
+ * Accept/dismiss: lets an editor+ mark a finding as reviewed risk they're
+ * choosing not to act on right now (a false positive, or a tradeoff they've
+ * consciously accepted) without losing the finding from history. Accepted
+ * findings are excluded from "effective risk" counts on the dashboards.
+ */
+export async function acceptFinding(findingId: string, reason: string) {
+  const user = await requireUser();
+  const [row] = await db
+    .select({ finding: findings, repo: repos })
+    .from(findings)
+    .innerJoin(scans, eq(findings.scanId, scans.id))
+    .innerJoin(repos, eq(scans.repoId, repos.id))
+    .where(eq(findings.id, findingId));
+  if (!row) throw new Error("Finding not found.");
+  const { finding, repo } = row;
+
+  const role = await getRoleForOwner(user.id, repo.userId);
+  if (!role || !roleAtLeast(role, "editor")) throw new Error("Finding not found.");
+
+  await db
+    .update(findings)
+    .set({
+      status: "accepted",
+      acceptedBy: user.id,
+      acceptedAt: new Date(),
+      acceptedReason: reason.trim() || null,
+    })
+    .where(eq(findings.id, findingId));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "finding.accept",
+    targetType: "finding",
+    targetId: finding.id,
+    metadata: { fullName: repo.fullName, title: finding.title, reason: reason.trim() || null },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repo.id}`);
+  revalidatePath("/dashboard");
+}
+
+export async function reopenFinding(findingId: string) {
+  const user = await requireUser();
+  const [row] = await db
+    .select({ finding: findings, repo: repos })
+    .from(findings)
+    .innerJoin(scans, eq(findings.scanId, scans.id))
+    .innerJoin(repos, eq(scans.repoId, repos.id))
+    .where(eq(findings.id, findingId));
+  if (!row) throw new Error("Finding not found.");
+  const { finding, repo } = row;
+
+  const role = await getRoleForOwner(user.id, repo.userId);
+  if (!role || !roleAtLeast(role, "editor")) throw new Error("Finding not found.");
+
+  await db
+    .update(findings)
+    .set({ status: "open", acceptedBy: null, acceptedAt: null, acceptedReason: null })
+    .where(eq(findings.id, findingId));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "finding.reopen",
+    targetType: "finding",
+    targetId: finding.id,
+    metadata: { fullName: repo.fullName, title: finding.title },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repo.id}`);
+  revalidatePath("/dashboard");
+}
+
+/**
+ * PR-triggered scanning: admin-only, per-repo opt-in. Enabling it registers
+ * a GitHub webhook (pull_request events) pointed at
+ * /api/webhooks/github, so opening or updating a PR against this repo runs
+ * a scan scoped to just the changed files and comments the result inline —
+ * disabling it removes that webhook. Uses the repo OWNER's GitHub token,
+ * same as every other repo-scoped action.
+ */
+export async function togglePrScan(repoId: string, enable: boolean) {
+  const { user, repo } = await requireRepoAccess(repoId, "admin");
+  const [owner] = await db.select().from(users).where(eq(users.id, repo.userId));
+  const token = owner ? await getGitHubToken(owner.id) : null;
+  if (!token) throw new Error("The repository owner's GitHub connection needs to be reconnected.");
+
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  const baseUrl = process.env.NEXTAUTH_URL;
+  if (!secret || !baseUrl) {
+    throw new Error("PR-triggered scanning isn't configured on this server yet (missing GITHUB_WEBHOOK_SECRET or NEXTAUTH_URL).");
+  }
+
+  if (enable) {
+    const webhookId = await createRepoWebhook(token, repo.fullName, `${baseUrl}/api/webhooks/github`, secret);
+    await db.update(repos).set({ prScanEnabled: true, githubWebhookId: webhookId }).where(eq(repos.id, repo.id));
+    await logAudit({
+      ownerId: repo.userId,
+      actor: { id: user.id, email: user.email },
+      action: "repo.prscan_enable",
+      targetType: "repo",
+      targetId: repo.id,
+      metadata: { fullName: repo.fullName },
+    });
+  } else {
+    if (repo.githubWebhookId) {
+      try {
+        await deleteRepoWebhook(token, repo.fullName, repo.githubWebhookId);
+      } catch (e) {
+        // The webhook may already be gone (e.g. removed manually on GitHub)
+        // — don't let that block turning the feature off on our side.
+        console.error(`[togglePrScan] failed to delete webhook for ${repo.fullName}:`, e);
+      }
+    }
+    await db.update(repos).set({ prScanEnabled: false, githubWebhookId: null }).where(eq(repos.id, repo.id));
+    await logAudit({
+      ownerId: repo.userId,
+      actor: { id: user.id, email: user.email },
+      action: "repo.prscan_disable",
+      targetType: "repo",
+      targetId: repo.id,
+      metadata: { fullName: repo.fullName },
+    });
+  }
+
+  revalidatePath(`/dashboard/repositories/${repoId}`);
 }
 
 /**
@@ -349,22 +539,58 @@ export async function inviteTeamMember(email: string, role: string) {
     acceptedAt: matchingUser ? new Date() : null,
   });
 
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "team.invite",
+    targetType: "team_member",
+    metadata: { email: trimmed, role },
+  });
+
   revalidatePath("/dashboard/settings/team");
 }
 
 export async function updateTeamMemberRole(memberId: string, role: string) {
   const user = await requireUser();
   assertTeamRole(role);
+  const [member] = await db
+    .select()
+    .from(teamMembers)
+    .where(and(eq(teamMembers.id, memberId), eq(teamMembers.ownerId, user.id)));
   await db
     .update(teamMembers)
     .set({ role })
     .where(and(eq(teamMembers.id, memberId), eq(teamMembers.ownerId, user.id)));
+  if (member) {
+    await logAudit({
+      ownerId: user.id,
+      actor: { id: user.id, email: user.email },
+      action: "team.role_change",
+      targetType: "team_member",
+      targetId: memberId,
+      metadata: { email: member.memberEmail, fromRole: member.role, toRole: role },
+    });
+  }
   revalidatePath("/dashboard/settings/team");
 }
 
 export async function removeTeamMember(memberId: string) {
   const user = await requireUser();
+  const [member] = await db
+    .select()
+    .from(teamMembers)
+    .where(and(eq(teamMembers.id, memberId), eq(teamMembers.ownerId, user.id)));
   await db.delete(teamMembers).where(and(eq(teamMembers.id, memberId), eq(teamMembers.ownerId, user.id)));
+  if (member) {
+    await logAudit({
+      ownerId: user.id,
+      actor: { id: user.id, email: user.email },
+      action: "team.remove",
+      targetType: "team_member",
+      targetId: memberId,
+      metadata: { email: member.memberEmail, role: member.role },
+    });
+  }
   revalidatePath("/dashboard/settings/team");
 }
 
@@ -405,11 +631,19 @@ export async function listApiKeys() {
 export async function createApiKey(label: string) {
   const user = await requireUser();
   const { raw, hash, prefix } = generateApiKey();
+  const trimmedLabel = label.trim() || "Default key";
   await db.insert(apiKeys).values({
     userId: user.id,
-    label: label.trim() || "Default key",
+    label: trimmedLabel,
     keyHash: hash,
     keyPrefix: prefix,
+  });
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "apikey.create",
+    targetType: "api_key",
+    metadata: { label: trimmedLabel, keyPrefix: prefix },
   });
   revalidatePath("/dashboard/settings");
   return raw;
@@ -417,6 +651,39 @@ export async function createApiKey(label: string) {
 
 export async function revokeApiKey(keyId: string) {
   const user = await requireUser();
+  const [key] = await db.select().from(apiKeys).where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, user.id)));
   await db.delete(apiKeys).where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, user.id)));
+  if (key) {
+    await logAudit({
+      ownerId: user.id,
+      actor: { id: user.id, email: user.email },
+      action: "apikey.revoke",
+      targetType: "api_key",
+      targetId: keyId,
+      metadata: { label: key.label, keyPrefix: key.keyPrefix },
+    });
+  }
   revalidatePath("/dashboard/settings");
+}
+
+/**
+ * Audit log: every account-changing action taken on an account, who did it,
+ * and when. Admin+ only — a viewer or editor can see risk data but not who
+ * has been touching settings, team membership, or API keys. Defaults to the
+ * signed-in user's own account; pass `ownerId` to view a team account's log
+ * (requires admin on that account too).
+ */
+export async function listAuditLog(ownerId?: string) {
+  const user = await requireUser();
+  const targetOwnerId = ownerId ?? user.id;
+  const role = await getRoleForOwner(user.id, targetOwnerId);
+  if (!role || !roleAtLeast(role, "admin")) {
+    throw new Error("You need admin access on this account to view its audit log.");
+  }
+  return db
+    .select()
+    .from(auditLogs)
+    .where(eq(auditLogs.ownerId, targetOwnerId))
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(200);
 }
