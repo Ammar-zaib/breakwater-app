@@ -9,6 +9,7 @@ import { getGitHubToken } from "@/lib/current-user";
 import { sendAlertEmail } from "@/lib/email";
 import { fanOutAlert } from "@/lib/alerts";
 import type { ScanReport } from "@/lib/scan";
+import { timingSafeEqualString } from "@/lib/security";
 
 export const maxDuration = 300; // this can run long with many repos — Vercel Pro extends this further if needed
 
@@ -23,7 +24,7 @@ export const maxDuration = 300; // this can run long with many repos — Vercel 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   const expected = process.env.CRON_SECRET;
-  if (!expected || authHeader !== `Bearer ${expected}`) {
+  if (!expected || !authHeader || !timingSafeEqualString(authHeader, `Bearer ${expected}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -619,7 +619,7 @@ export async function togglePrScan(repoId: string, enable: boolean) {
  * Standing suppression rules: instead of accepting the same kind of finding
  * scan after scan, an editor+ can create a rule that auto-suppresses
  * matching findings on future scans (see matchIgnoreRule in
- * src/lib/scan-runner.ts). Quick-created from a finding you're already
+ * src/lib/ignore-rules.ts). Quick-created from a finding you're already
  * looking at, or managed as a list on the repo page.
  */
 

@@ -11,6 +11,7 @@ const ACTION_LABELS: Record<string, string> = {
   "settings.alert_email_update": "Updated alert email",
   "settings.webhook_update": "Updated webhook settings",
   "settings.digest_update": "Changed weekly digest preference",
+  "billing.checkout_start": "Started a billing checkout",
   "finding.pr_open": "Opened a fix PR",
   "finding.pr_open_failed": "Fix PR failed to open",
   "finding.accept": "Accepted a finding",

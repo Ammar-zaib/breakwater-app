@@ -155,6 +155,30 @@ var and can just hit itself on `localhost`.
    results rather than re-scanning, so it's cheap to run and safe to trigger with **Run now**
    any time. Each user can turn their own digest off in Settings without affecting anyone else's.
 
+## 9.5 Back up the database
+
+Do this before you have real customer data in there, not after something goes wrong. Coolify has
+automated backups built into every database resource it manages — you almost certainly don't need
+a custom script.
+
+1. In Coolify, open the **Postgres** database resource (not the application) you created in step 2.
+2. Go to its **Backups** tab.
+3. **Add a new scheduled backup.** Set a frequency — daily is reasonable for an app this size.
+4. **Destination**: Coolify can save backups locally on the server, or to an S3-compatible bucket
+   (AWS S3, Cloudflare R2, Backblaze B2, etc.) if you add one as a "S3 Storage" destination first,
+   under the server's storage settings. Local-only backups protect you from a bad migration or a
+   fat-fingered `DELETE`; they do **not** protect you if the server itself is lost, so an
+   off-site (S3-compatible) destination is worth the ~5 minutes it takes to set up once you have
+   real customers depending on this data.
+5. Coolify shows past backup runs and lets you restore from one directly in the UI — worth doing a
+   test restore once (to a throwaway database, not your live one) so you know the process works
+   before you ever need it under pressure.
+
+If your Coolify version doesn't expose a Backups tab on the database resource, the manual fallback
+is the same SSH-tunnel approach you already use for `db:push`: from the tunnel, run
+`pg_dump "$DATABASE_URL" | gzip > backup-$(date +%F).sql.gz` instead of `npm run db:push`, and keep
+the resulting file somewhere other than the server itself.
+
 ## 10. Try it
 
 1. Visit `https://breakwater.syncxnet.com`, sign in with GitHub.
@@ -263,3 +287,56 @@ second Scheduled Task to add.
 
 7. **New audit log page** appears in the sidebar automatically — it's populated going forward
    from actions taken after this deploy; nothing is backfilled for past activity.
+
+## Deploying the third round (tests, security hardening, Stripe billing, legal pages)
+
+1. **Push the code.** `git add -A && git commit -m "Add tests, security hardening, billing, legal pages" && git push`.
+
+2. **Push the schema changes.** New columns on `user`: `stripe_customer_id`,
+   `stripe_subscription_id`, `subscription_status`, `subscription_current_period_end`. Same
+   SSH-tunnel `npm run db:push` approach as every time before.
+
+3. **New dependencies** (`stripe`, `marked`, plus `vitest` and friends as dev-only dependencies)
+   install automatically on the next Coolify build — nothing to configure for those on their own.
+
+4. **Optional: turn on billing.** Skip this section entirely if you're not charging yet — the
+   Billing card in Settings only appears when all three of these are set, so leaving them unset
+   keeps billing fully invisible:
+
+   ```
+   STRIPE_SECRET_KEY       <- from the Stripe Dashboard (Developers → API keys)
+   STRIPE_PRICE_ID         <- the Price ID of the plan you want to sell (Products → your product → pricing)
+   STRIPE_WEBHOOK_SECRET   <- see below
+   ```
+
+   To get the webhook secret: in the Stripe Dashboard, go to **Developers → Webhooks → Add
+   endpoint**, set the URL to `https://breakwater.syncxnet.com/api/webhooks/stripe`, and select
+   these events: `customer.subscription.created`, `customer.subscription.updated`,
+   `customer.subscription.deleted`. Stripe shows you the signing secret (`whsec_...`) once the
+   endpoint is created — that's `STRIPE_WEBHOOK_SECRET`. Use Stripe **test mode** keys first and
+   run a test subscription end to end before switching to live keys.
+
+   Important: billing is wired up (subscribe, manage, cancel, status tracking) but **nothing in
+   the app is gated on subscription status** — a lapsed or canceled subscription doesn't currently
+   block scanning or anything else. That's deliberate; turning on enforcement is a product decision
+   (trial length, grace period, what happens to existing data) worth making explicitly rather than
+   inheriting from a column existing. See the comment on `subscriptionStatus` in `src/db/schema.ts`.
+
+5. **Before you actually charge anyone or call this customer-ready**, open
+   `LEGAL_TERMS_OF_SERVICE.md` and `LEGAL_PRIVACY_POLICY.md` at the repo root and fill in every
+   `[bracketed placeholder]` — company name, jurisdiction, contact email, dates, and (with a
+   lawyer's input) the governing-law and liability sections. Once filled in, redeploy — the live
+   pages at `/terms` and `/privacy` (linked from the landing page footer) render those files
+   directly, so there's nothing else to update in the app itself. Until you fill them in, those
+   pages will show the placeholder brackets to anyone who visits them.
+
+6. **Run the test suite** any time you're changing scan logic, alert routing, or access control —
+   `npm test` (or `npm run test:watch` while iterating). It's not wired into the Coolify build yet
+   (a build failure there would block every deploy on a still-small suite), so run it yourself
+   before pushing changes to those areas. `SECURITY_REVIEW.md` at the repo root has the fuller
+   writeup of what was checked and fixed in this pass, and what's explicitly still open.
+
+7. **Redeploy**, then spot-check: `/terms` and `/privacy` load, Settings shows (or correctly hides)
+   the Billing card depending on whether you set the Stripe env vars, and — if you did — a test
+   subscription in Stripe test mode actually updates the status shown in Settings after the
+   webhook fires.

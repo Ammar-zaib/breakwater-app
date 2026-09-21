@@ -7,6 +7,7 @@ import { runScan, type ScanReport, type ScanUsage } from "@/lib/scan";
 import { VENDOR_SEARCH_TERMS } from "@/lib/vendors";
 import { decryptSecret } from "@/lib/crypto";
 import { estimateCostUsd } from "@/lib/cost";
+import { matchIgnoreRule } from "@/lib/ignore-rules";
 
 /**
  * The one place that actually runs a scan and persists it — used by the
@@ -80,26 +81,6 @@ async function persistScan(
   }
 
   return { scanId: scan.id };
-}
-
-type IgnoreRule = typeof ignoreRules.$inferSelect;
-
-/** A rule matches when every condition it sets is satisfied — a rule with no
- *  conditions set (shouldn't normally happen) matches nothing, not everything. */
-function matchIgnoreRule(
-  rules: IgnoreRule[],
-  vendor: Vendor,
-  title: string,
-  filePath: string | null
-): IgnoreRule | null {
-  for (const rule of rules) {
-    if (rule.vendor && rule.vendor !== vendor) continue;
-    if (!rule.titleContains && !rule.filePathContains) continue;
-    if (rule.titleContains && !title.toLowerCase().includes(rule.titleContains.toLowerCase())) continue;
-    if (rule.filePathContains && !(filePath ?? "").toLowerCase().includes(rule.filePathContains.toLowerCase())) continue;
-    return rule;
-  }
-  return null;
 }
 
 /**

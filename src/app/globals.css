@@ -110,3 +110,47 @@ body::before {
     opacity: 0.35;
   }
 }
+
+/* Legal document pages (/terms, /privacy) — rendered from repo-root
+   LEGAL_*.md via marked, see src/lib/legal-docs.ts. */
+.legal-doc h1 {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 500;
+  margin: 0 0 0.5rem;
+}
+.legal-doc h2 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 500;
+  margin: 2rem 0 0.75rem;
+  color: var(--ink);
+}
+.legal-doc p {
+  color: var(--ink-dim);
+  line-height: 1.7;
+  margin: 0.75rem 0;
+}
+.legal-doc strong {
+  color: var(--ink);
+}
+.legal-doc a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.legal-doc code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.legal-doc ul,
+.legal-doc ol {
+  color: var(--ink-dim);
+  padding-left: 1.4rem;
+  margin: 0.75rem 0;
+}
+.legal-doc li {
+  margin: 0.3rem 0;
+}

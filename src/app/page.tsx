@@ -479,6 +479,14 @@ export default async function LandingPage() {
           </div>
           <span className="brand">EARLY ACCESS · STRIPE · TWILIO · OPENAI · SHOPIFY · SLACK</span>
           <span className="brand">SCANS RUN ON YOUR OWN CLAUDE USAGE · YOUR CODE GOES NOWHERE ELSE</span>
+          <div className="flex gap-4 text-xs text-ink-dim">
+            <Link href="/terms" className="hover:text-ink transition-colors">
+              Terms
+            </Link>
+            <Link href="/privacy" className="hover:text-ink transition-colors">
+              Privacy
+            </Link>
+          </div>
         </div>
       </footer>
     </div>

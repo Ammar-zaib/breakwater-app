@@ -43,6 +43,17 @@ export const users = pgTable("user", {
   // of the per-scan alert channels above — on by default since it's a
   // low-noise once-a-week email, opt-out rather than opt-in.
   weeklyDigestEnabled: boolean("weekly_digest_enabled").notNull().default(true),
+  // Stripe billing (see src/lib/stripe.ts, /api/webhooks/stripe). Tracked
+  // for every account, but DELIBERATELY not enforced anywhere yet — no
+  // action in this app checks subscriptionStatus before allowing access.
+  // Enforcing it (e.g. blocking scans for a lapsed subscription) is a
+  // product decision — trial length, grace period, what happens to
+  // existing data — that should be made explicitly, not implied by this
+  // column existing. See SECURITY_REVIEW.md / DEPLOY_COOLIFY.md.
+  stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  subscriptionStatus: text("subscription_status").notNull().default("none"), // 'none' | Stripe subscription.status values ('trialing' | 'active' | 'past_due' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'unpaid' | 'paused')
+  subscriptionCurrentPeriodEnd: timestamp("subscription_current_period_end"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

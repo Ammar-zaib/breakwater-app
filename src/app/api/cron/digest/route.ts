@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { repos, users } from "@/db/schema";
 import { buildAccountDigest } from "@/lib/digest";
 import { sendDigestEmail } from "@/lib/email";
+import { timingSafeEqualString } from "@/lib/security";
 
 export const maxDuration = 300;
 
@@ -17,7 +18,7 @@ export const maxDuration = 300;
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   const expected = process.env.CRON_SECRET;
-  if (!expected || authHeader !== `Bearer ${expected}`) {
+  if (!expected || !authHeader || !timingSafeEqualString(authHeader, `Bearer ${expected}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
