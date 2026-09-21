@@ -145,13 +145,23 @@ var and can just hit itself on `localhost`.
 3. Frequency: `0 13 * * *` (once a day, 13:00 UTC — adjust if you want a different time).
 4. Save. You can also hit **Run now** there to test it immediately instead of waiting a day.
 
+5. Repeat with a second Scheduled Task for the weekly risk digest email:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/digest
+   ```
+
+   Frequency: `0 14 * * 1` (once a week, Monday 14:00 UTC). This one summarizes existing scan
+   results rather than re-scanning, so it's cheap to run and safe to trigger with **Run now**
+   any time. Each user can turn their own digest off in Settings without affecting anyone else's.
+
 ## 10. Try it
 
 1. Visit `https://breakwater.syncxnet.com`, sign in with GitHub.
 2. **Settings** → paste in an Anthropic API key (console.anthropic.com/settings/keys) — this
    pays for and runs your scans; each signed-in user has their own.
 3. **Repositories → Connect repository** → pick one → pick a vendor (Stripe, Twilio, OpenAI,
-   Shopify, or Slack). It scans immediately.
+   Shopify, Slack, AWS, PayPal, Auth0, or SendGrid). It scans immediately.
 4. Use "Run now" on the Scheduled Task (step 9) to confirm the daily path works end to end
    without waiting until tomorrow.
 
@@ -160,3 +170,96 @@ var and can just hit itself on `localhost`.
 Since you're not using Netlify, `netlify.toml` and the `netlify/` folder are dead weight —
 Nixpacks just ignores them, so nothing breaks if you leave them, but if you want a clean repo
 say the word and I'll remove them (and `vercel.json` too, if you want).
+
+## Deploying the enterprise update (audit log, accept/dismiss, PR scanning, dashboard trend chart, CSV export, AWS + PayPal)
+
+This update adds one new table and a few new columns, plus one new env var. Steps:
+
+1. **Push the code.** From the project folder: `git add -A && git commit -m "Add enterprise features" && git push`. Coolify redeploys on push same as always.
+
+2. **Push the schema changes.** The new `audit_log` table and the new columns on `finding`
+   (`status`, `accepted_by`, `accepted_at`, `accepted_reason`) and `repo`
+   (`pr_scan_enabled`, `github_webhook_id`) need `npm run db:push` run against the database —
+   same SSH-tunnel-to-the-Postgres-container approach you used the first time (tunnel to the
+   container's internal Docker IP, point `DATABASE_URL` at `localhost:<tunnel-port>` with
+   `sslmode=disable`, then run `npm run db:push` from your machine). Just ask if you want the
+   exact commands again — same shape as last time.
+
+3. **Add one new environment variable**, in the application's Environment Variables tab:
+
+   ```
+   GITHUB_WEBHOOK_SECRET   <- output of: openssl rand -base64 32
+   ```
+
+   This signs the webhook GitHub sends when a PR-triggered scan fires, so
+   `/api/webhooks/github` can verify a payload actually came from GitHub. `NEXTAUTH_URL`
+   (already set) is reused to build the webhook's own callback URL — nothing else to add.
+
+4. **Redeploy** so the new env var takes effect.
+
+## Deploying the second enterprise update (Google/Microsoft sign-in, workspaces, suppression rules, finding assignment, branch scanning, scan cost tracking, Auth0 + SendGrid vendors, Teams + PagerDuty alerts, weekly digest email, PDF risk report)
+
+Same shape as the previous update — new columns/tables need a `db:push`, a few features need new
+env vars (all optional; each feature no-ops cleanly if its env vars are missing), and there's a
+second Scheduled Task to add.
+
+1. **Push the code.** `git add -A && git commit -m "Add second round of enterprise features" && git push`.
+
+2. **Push the schema changes.** New table `ignore_rule`; new columns on `user`
+   (`teams_webhook_url`, `pagerduty_integration_key`, `weekly_digest_enabled`), `repo`
+   (`extra_branch`), `scan` (`input_tokens`, `output_tokens`, `estimated_cost_usd`), and `finding`
+   (`assigned_to`, `assigned_at`, `suppressed_by_rule_id`). Same SSH-tunnel `npm run db:push`
+   approach as before.
+
+3. **New dependency.** The PDF risk report (`pdfkit`) is a plain `npm install` — Coolify's build
+   picks it up automatically from `package.json` on the next deploy, nothing to configure. One
+   thing worth knowing: `next.config.ts` now lists `pdfkit`/`fontkit` under
+   `serverExternalPackages` — that's required for the production build to succeed (pdfkit's font
+   library isn't compatible with being bundled by Next's compiler), so don't remove it.
+
+4. **Optional environment variables** — add whichever of these you want; everything else keeps
+   working if you skip all of them:
+
+   ```
+   # Google sign-in (in addition to the mandatory GitHub sign-in)
+   AUTH_GOOGLE_ID
+   AUTH_GOOGLE_SECRET
+
+   # Microsoft sign-in (any Microsoft account — personal, school, or work, any org)
+   AUTH_MICROSOFT_ENTRA_ID_ID
+   AUTH_MICROSOFT_ENTRA_ID_SECRET
+   ```
+
+   Get Google credentials from the Google Cloud Console (OAuth client ID, "Web application",
+   authorized redirect URI `https://breakwater.syncxnet.com/api/auth/callback/google`) and
+   Microsoft credentials from the Azure Portal (App registrations → "Accounts in any
+   organizational directory and personal Microsoft accounts", redirect URI
+   `https://breakwater.syncxnet.com/api/auth/callback/microsoft-entra-id`). Neither is required —
+   GitHub sign-in alone still works exactly as before, these just add alternative "sign in with
+   your work identity" buttons on the login page. A user who signs in with Google or Microsoft
+   still has to separately connect GitHub afterward (a banner in the dashboard prompts for it),
+   since that's the grant that actually gives Breakwater repo access.
+
+   Teams and PagerDuty alerts need no server-side env vars at all — each user pastes their own
+   Teams incoming-webhook URL and/or PagerDuty Events API v2 integration key into
+   **Settings → Webhook, Slack, Teams & PagerDuty alerts**, same as the existing webhook/Slack
+   fields.
+
+5. **Add a second Scheduled Task**, for the weekly digest email — see step 9 above (now
+   documents both the daily scan and the weekly digest).
+
+6. **Redeploy**, then spot-check: the workspace switcher shows up in the sidebar for any account
+   with a team, `/dashboard/repositories/<id>` has "Set extra branch" and suppression rules,
+   Settings has the new Teams/PagerDuty fields and the weekly digest toggle, and the Overview
+   page's "Download PDF report" link produces a PDF.
+
+5. **No manual GitHub webhook setup needed.** PR-triggered scanning is opt-in per repository:
+   an admin flips the "PR scanning: off/on" toggle on that repo's page, and Breakwater
+   registers (or removes) the GitHub webhook automatically via the API using the existing
+   GitHub OAuth token. Nothing to configure by hand in GitHub's UI.
+
+6. **New vendors (AWS SDK v2, PayPal)** show up automatically in the vendor picker when
+   connecting a repo — no extra setup.
+
+7. **New audit log page** appears in the sidebar automatically — it's populated going forward
+   from actions taken after this deploy; nothing is backfilled for past activity.

@@ -9,6 +9,7 @@ import {
   createApiKey,
   revokeApiKey,
   updateWebhookSettings,
+  updateDigestPreference,
 } from "@/app/actions";
 
 export function AnthropicKeyForm({ hasKey }: { hasKey: boolean }) {
@@ -188,18 +189,24 @@ export function ApiKeysManager({ initialKeys }: { initialKeys: ApiKeyRow[] }) {
 export function WebhookSettingsForm({
   webhookUrl,
   slackWebhookUrl,
+  teamsWebhookUrl,
+  pagerDutyIntegrationKey,
 }: {
   webhookUrl: string;
   slackWebhookUrl: string;
+  teamsWebhookUrl: string;
+  pagerDutyIntegrationKey: string;
 }) {
   const [webhook, setWebhook] = useState(webhookUrl);
   const [slack, setSlack] = useState(slackWebhookUrl);
+  const [teams, setTeams] = useState(teamsWebhookUrl);
+  const [pagerDuty, setPagerDuty] = useState(pagerDutyIntegrationKey);
   const [isPending, startTransition] = useTransition();
   const [status, setStatus] = useState<string | null>(null);
 
   function save() {
     startTransition(async () => {
-      await updateWebhookSettings(webhook, slack);
+      await updateWebhookSettings(webhook, slack, teams, pagerDuty);
       setStatus("Saved.");
       setTimeout(() => setStatus(null), 2500);
     });
@@ -231,6 +238,31 @@ export function WebhookSettingsForm({
           className="w-full border border-line rounded-lg px-3 py-2 text-sm font-mono bg-bg"
         />
       </div>
+      <div>
+        <label className="block text-xs font-medium text-ink-dim mb-1.5">
+          Microsoft Teams webhook URL <span className="text-ink-dim/70">(optional)</span>
+        </label>
+        <input
+          type="url"
+          placeholder="https://….webhook.office.com/webhookb2/…"
+          value={teams}
+          onChange={(e) => setTeams(e.target.value)}
+          className="w-full border border-line rounded-lg px-3 py-2 text-sm font-mono bg-bg"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-ink-dim mb-1.5">
+          PagerDuty integration key{" "}
+          <span className="text-ink-dim/70">(optional — only pages on high-risk findings)</span>
+        </label>
+        <input
+          type="text"
+          placeholder="32-character Events API v2 key"
+          value={pagerDuty}
+          onChange={(e) => setPagerDuty(e.target.value)}
+          className="w-full border border-line rounded-lg px-3 py-2 text-sm font-mono bg-bg"
+        />
+      </div>
       <button
         onClick={save}
         disabled={isPending}
@@ -240,6 +272,38 @@ export function WebhookSettingsForm({
       </button>
       {status ? <p className="text-xs text-low">{status}</p> : null}
     </div>
+  );
+}
+
+export function DigestPreferenceToggle({ initialEnabled }: { initialEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [isPending, startTransition] = useTransition();
+
+  function toggle() {
+    const next = !enabled;
+    setEnabled(next); // optimistic — a weekly email preference isn't worth a loading flicker
+    startTransition(async () => {
+      try {
+        await updateDigestPreference(next);
+      } catch {
+        setEnabled(!next);
+      }
+    });
+  }
+
+  return (
+    <label className="flex items-center gap-2.5 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={enabled}
+        disabled={isPending}
+        onChange={toggle}
+        className="w-4 h-4 accent-accent"
+      />
+      <span className="text-sm">
+        Send me a weekly summary email of my account&apos;s risk posture across every watched repo
+      </span>
+    </label>
   );
 }
 

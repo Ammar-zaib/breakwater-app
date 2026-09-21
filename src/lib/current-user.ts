@@ -32,3 +32,14 @@ export async function getGitHubToken(userId: string): Promise<string | null> {
     .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")));
   return account?.access_token ?? null;
 }
+
+/** Whether this user has a linked GitHub account at all — someone who signed
+ *  in via Google/Microsoft hasn't necessarily connected GitHub yet, and
+ *  Breakwater can't read any repos for them until they do. */
+export async function hasGitHubAccount(userId: string): Promise<boolean> {
+  const [account] = await db
+    .select({ userId: accounts.userId })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")));
+  return !!account;
+}

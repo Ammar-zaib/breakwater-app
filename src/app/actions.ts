@@ -1,20 +1,22 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
-import { repos, vendorWatches, scans, findings, users, teamMembers, apiKeys, auditLogs, type Vendor } from "@/db/schema";
+import { repos, vendorWatches, scans, findings, users, teamMembers, apiKeys, auditLogs, ignoreRules, type Vendor } from "@/db/schema";
 import { getCurrentUser, getGitHubToken } from "@/lib/current-user";
-import { listUserRepos, fetchFileContent, createRepoWebhook, deleteRepoWebhook } from "@/lib/github";
-import { performScan } from "@/lib/scan-runner";
+import { listUserRepos, fetchFileContent, createRepoWebhook, deleteRepoWebhook, branchExists, fetchBranchFilePaths } from "@/lib/github";
+import { performScan, performBranchScan } from "@/lib/scan-runner";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { sendAlertEmail } from "@/lib/email";
 import { fanOutAlert } from "@/lib/alerts";
 import { generateFix } from "@/lib/fix";
 import { openFixPullRequest } from "@/lib/github-write";
-import { getRoleForOwner, roleAtLeast, type AccessRole } from "@/lib/access";
+import { getRoleForOwner, roleAtLeast, getAccessibleAccounts, type AccessRole } from "@/lib/access";
 import { generateApiKey } from "@/lib/api-keys";
 import { logAudit } from "@/lib/audit";
+import { cookies } from "next/headers";
+import { ACTIVE_WORKSPACE_COOKIE } from "@/lib/workspace";
 
 async function requireUser() {
   const user = await getCurrentUser();
@@ -34,6 +36,24 @@ async function requireRepoAccess(repoId: string, minRole: AccessRole) {
     throw new Error("Repository not found.");
   }
   return { user, repo, role };
+}
+
+/** Switches which account's data the dashboard shows — the signed-in user's own, or a team account they belong to. */
+export async function setActiveWorkspace(ownerId: string) {
+  const user = await requireUser();
+  const accounts = await getAccessibleAccounts(user.id);
+  if (!accounts.some((a) => a.ownerId === ownerId)) {
+    throw new Error("You don't have access to that account.");
+  }
+  const cookieStore = await cookies();
+  cookieStore.set(ACTIVE_WORKSPACE_COOKIE, ownerId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+  revalidatePath("/dashboard");
 }
 
 /** Repos in the user's GitHub account that aren't connected yet, for the "Add repository" picker. */
@@ -177,13 +197,20 @@ export async function updateAlertEmail(email: string) {
   revalidatePath("/dashboard/settings");
 }
 
-export async function updateWebhookSettings(webhookUrl: string, slackWebhookUrl: string) {
+export async function updateWebhookSettings(
+  webhookUrl: string,
+  slackWebhookUrl: string,
+  teamsWebhookUrl: string = "",
+  pagerDutyIntegrationKey: string = ""
+) {
   const user = await requireUser();
   await db
     .update(users)
     .set({
       webhookUrl: webhookUrl.trim() || null,
       slackWebhookUrl: slackWebhookUrl.trim() || null,
+      teamsWebhookUrl: teamsWebhookUrl.trim() || null,
+      pagerDutyIntegrationKey: pagerDutyIntegrationKey.trim() || null,
     })
     .where(eq(users.id, user.id));
   await logAudit({
@@ -194,24 +221,45 @@ export async function updateWebhookSettings(webhookUrl: string, slackWebhookUrl:
   revalidatePath("/dashboard/settings");
 }
 
+export async function updateDigestPreference(enabled: boolean) {
+  const user = await requireUser();
+  await db.update(users).set({ weeklyDigestEnabled: enabled }).where(eq(users.id, user.id));
+  await logAudit({
+    ownerId: user.id,
+    actor: { id: user.id, email: user.email },
+    action: "settings.digest_update",
+    metadata: { enabled },
+  });
+  revalidatePath("/dashboard/settings");
+}
+
 /** Manual "send yourself a test alert" button — fans out to every channel
- *  the user has configured (email, webhook, Slack), so Settings isn't a
- *  leap of faith for any of them. */
+ *  the user has configured (email, webhook, Slack, Teams, PagerDuty), so
+ *  Settings isn't a leap of faith for any of them. Uses "high" risk for the
+ *  sample payload specifically so a configured PagerDuty key gets exercised
+ *  too — otherwise fanOutAlert's high-risk-only gate would silently skip it
+ *  and the button would look like it's working when it isn't. */
 export async function sendTestAlert() {
   const user = await requireUser();
   const to = user.alertEmail || user.email;
-  if (!to && !user.webhookUrl && !user.slackWebhookUrl) {
-    throw new Error("Add an alert email, webhook URL, or Slack webhook URL first.");
+  if (!to && !user.webhookUrl && !user.slackWebhookUrl && !user.teamsWebhookUrl && !user.pagerDutyIntegrationKey) {
+    throw new Error("Add an alert email, webhook URL, Slack webhook, Teams webhook, or PagerDuty key first.");
   }
 
   const dashboardUrl = process.env.NEXTAUTH_URL ? `${process.env.NEXTAUTH_URL}/dashboard` : "/dashboard";
   const results = await fanOutAlert(
-    { to: to ?? null, webhookUrl: user.webhookUrl, slackWebhookUrl: user.slackWebhookUrl },
+    {
+      to: to ?? null,
+      webhookUrl: user.webhookUrl,
+      slackWebhookUrl: user.slackWebhookUrl,
+      teamsWebhookUrl: user.teamsWebhookUrl,
+      pagerDutyIntegrationKey: user.pagerDutyIntegrationKey,
+    },
     {
       repoName: "your-org/example-repo",
       repoUrl: "",
       vendor: "stripe",
-      overallRisk: "medium",
+      overallRisk: "high",
       summary: "This is a test alert from Breakwater — your setup works.",
       dashboardUrl,
       findingsCount: 1,
@@ -257,7 +305,84 @@ export async function getScanDetail(scanId: string) {
   const role = await getRoleForOwner(user.id, row.repo.userId);
   if (!role) throw new Error("Scan not found.");
   const findingRows = await db.select().from(findings).where(eq(findings.scanId, scanId));
-  return { scan: row.scan, findings: findingRows };
+
+  const assigneeIds = [...new Set(findingRows.map((f) => f.assignedTo).filter((id): id is string => !!id))];
+  const assignees = assigneeIds.length
+    ? await db.select({ id: users.id, email: users.email }).from(users).where(inArray(users.id, assigneeIds))
+    : [];
+  const assigneeEmailById = new Map(assignees.map((a) => [a.id, a.email]));
+
+  return {
+    scan: row.scan,
+    findings: findingRows.map((f) => ({
+      ...f,
+      assigneeEmail: f.assignedTo ? (assigneeEmailById.get(f.assignedTo) ?? null) : null,
+    })),
+  };
+}
+
+/** Everyone who can be assigned a finding on this repo: the owner plus every accepted team member. */
+export async function listAssignableUsers(repoId: string) {
+  const { repo } = await requireRepoAccess(repoId, "viewer");
+  const [owner] = await db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, repo.userId));
+  const accepted = await db
+    .select({ id: teamMembers.memberUserId, email: teamMembers.memberEmail })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.ownerId, repo.userId), isNotNull(teamMembers.acceptedAt), isNotNull(teamMembers.memberUserId)));
+
+  const seen = new Set<string>();
+  const result: { id: string; email: string | null }[] = [];
+  if (owner) {
+    result.push({ id: owner.id, email: owner.email });
+    seen.add(owner.id);
+  }
+  for (const m of accepted) {
+    if (m.id && !seen.has(m.id)) {
+      result.push({ id: m.id, email: m.email });
+      seen.add(m.id);
+    }
+  }
+  return result;
+}
+
+/** Assign (or unassign, with assigneeUserId null) a finding to a teammate. Purely informational routing. */
+export async function assignFinding(findingId: string, assigneeUserId: string | null) {
+  const user = await requireUser();
+  const [row] = await db
+    .select({ finding: findings, repo: repos })
+    .from(findings)
+    .innerJoin(scans, eq(findings.scanId, scans.id))
+    .innerJoin(repos, eq(scans.repoId, repos.id))
+    .where(eq(findings.id, findingId));
+  if (!row) throw new Error("Finding not found.");
+  const { finding, repo } = row;
+
+  const role = await getRoleForOwner(user.id, repo.userId);
+  if (!role || !roleAtLeast(role, "editor")) throw new Error("Finding not found.");
+
+  let assigneeEmail: string | null = null;
+  if (assigneeUserId) {
+    const assignable = await listAssignableUsers(repo.id);
+    const match = assignable.find((a) => a.id === assigneeUserId);
+    if (!match) throw new Error("That person doesn't have access to this repository.");
+    assigneeEmail = match.email;
+  }
+
+  await db
+    .update(findings)
+    .set({ assignedTo: assigneeUserId, assignedAt: assigneeUserId ? new Date() : null })
+    .where(eq(findings.id, findingId));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: assigneeUserId ? "finding.assign" : "finding.unassign",
+    targetType: "finding",
+    targetId: finding.id,
+    metadata: { fullName: repo.fullName, title: finding.title, assigneeEmail },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repo.id}`);
 }
 
 /**
@@ -488,6 +613,140 @@ export async function togglePrScan(repoId: string, enable: boolean) {
   }
 
   revalidatePath(`/dashboard/repositories/${repoId}`);
+}
+
+/**
+ * Standing suppression rules: instead of accepting the same kind of finding
+ * scan after scan, an editor+ can create a rule that auto-suppresses
+ * matching findings on future scans (see matchIgnoreRule in
+ * src/lib/scan-runner.ts). Quick-created from a finding you're already
+ * looking at, or managed as a list on the repo page.
+ */
+
+export async function quickSuppressFinding(findingId: string, reason: string) {
+  const user = await requireUser();
+  const [row] = await db
+    .select({ finding: findings, scan: scans, repo: repos })
+    .from(findings)
+    .innerJoin(scans, eq(findings.scanId, scans.id))
+    .innerJoin(repos, eq(scans.repoId, repos.id))
+    .where(eq(findings.id, findingId));
+  if (!row) throw new Error("Finding not found.");
+  const { finding, scan, repo } = row;
+
+  const role = await getRoleForOwner(user.id, repo.userId);
+  if (!role || !roleAtLeast(role, "editor")) throw new Error("Finding not found.");
+
+  const [rule] = await db
+    .insert(ignoreRules)
+    .values({
+      repoId: repo.id,
+      vendor: scan.vendor,
+      titleContains: finding.title,
+      filePathContains: finding.filePath,
+      reason: reason.trim() || null,
+      createdBy: user.id,
+    })
+    .returning();
+
+  await db
+    .update(findings)
+    .set({ status: "suppressed", suppressedByRuleId: rule.id })
+    .where(eq(findings.id, findingId));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "ignore_rule.create",
+    targetType: "ignore_rule",
+    targetId: rule.id,
+    metadata: { fullName: repo.fullName, title: finding.title, filePath: finding.filePath },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repo.id}`);
+  revalidatePath("/dashboard");
+}
+
+export async function listIgnoreRules(repoId: string) {
+  const { repo } = await requireRepoAccess(repoId, "viewer");
+  return db.select().from(ignoreRules).where(eq(ignoreRules.repoId, repo.id)).orderBy(desc(ignoreRules.createdAt));
+}
+
+export async function deleteIgnoreRule(ruleId: string) {
+  const user = await requireUser();
+  const [rule] = await db.select().from(ignoreRules).where(eq(ignoreRules.id, ruleId));
+  if (!rule) throw new Error("Rule not found.");
+  const { repo } = await requireRepoAccess(rule.repoId, "editor");
+
+  await db.delete(ignoreRules).where(eq(ignoreRules.id, ruleId));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: "ignore_rule.delete",
+    targetType: "ignore_rule",
+    targetId: ruleId,
+    metadata: { fullName: repo.fullName, titleContains: rule.titleContains, filePathContains: rule.filePathContains },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repo.id}`);
+}
+
+/**
+ * Multi-branch scanning: a repo can watch one extra branch beyond its
+ * default (e.g. a long-lived release/staging branch), scanned via a direct
+ * tree walk + content match (see performBranchScan) since GitHub code
+ * search only indexes the default branch.
+ */
+export async function setExtraBranch(repoId: string, branch: string) {
+  const { user, repo } = await requireRepoAccess(repoId, "admin");
+  const trimmed = branch.trim();
+
+  if (trimmed) {
+    const [owner] = await db.select().from(users).where(eq(users.id, repo.userId));
+    const token = owner ? await getGitHubToken(owner.id) : null;
+    if (!token) throw new Error("The repository owner's GitHub connection needs to be reconnected.");
+    const exists = await branchExists(token, repo.fullName, trimmed);
+    if (!exists) throw new Error(`No branch named "${trimmed}" was found on ${repo.fullName}.`);
+  }
+
+  await db.update(repos).set({ extraBranch: trimmed || null }).where(eq(repos.id, repo.id));
+
+  await logAudit({
+    ownerId: repo.userId,
+    actor: { id: user.id, email: user.email },
+    action: trimmed ? "repo.extra_branch_set" : "repo.extra_branch_clear",
+    targetType: "repo",
+    targetId: repo.id,
+    metadata: { fullName: repo.fullName, branch: trimmed || null },
+  });
+
+  revalidatePath(`/dashboard/repositories/${repoId}`);
+}
+
+export async function triggerBranchScan(repoId: string, vendor: Vendor) {
+  const { repo } = await requireRepoAccess(repoId, "editor");
+  if (!repo.extraBranch) throw new Error("No extra branch is being watched on this repository.");
+  const [owner] = await db.select().from(users).where(eq(users.id, repo.userId));
+  if (!owner?.anthropicApiKeyEncrypted) {
+    throw new Error("The repository owner needs to add an Anthropic API key in Settings before scanning.");
+  }
+  const token = await getGitHubToken(owner.id);
+  if (!token) throw new Error("The repository owner's GitHub connection needs to be reconnected.");
+
+  const candidatePaths = await fetchBranchFilePaths(token, repo.fullName, repo.extraBranch);
+  const { scanId } = await performBranchScan({
+    userId: owner.id,
+    anthropicApiKeyEncrypted: owner.anthropicApiKeyEncrypted,
+    repoId: repo.id,
+    repoFullName: repo.fullName,
+    vendor,
+    branch: repo.extraBranch,
+    candidatePaths,
+  });
+
+  revalidatePath(`/dashboard/repositories/${repoId}`);
+  return scanId;
 }
 
 /**

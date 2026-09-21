@@ -6,6 +6,8 @@ import { SHOPIFY_BRIEFING, SHOPIFY_SEARCH_TERMS } from "./shopify";
 import { SLACK_BRIEFING, SLACK_SEARCH_TERMS } from "./slack";
 import { AWS_BRIEFING, AWS_SEARCH_TERMS } from "./aws";
 import { PAYPAL_BRIEFING, PAYPAL_SEARCH_TERMS } from "./paypal";
+import { AUTH0_BRIEFING, AUTH0_SEARCH_TERMS } from "./auth0";
+import { SENDGRID_BRIEFING, SENDGRID_SEARCH_TERMS } from "./sendgrid";
 
 /**
  * Every vendor Breakwater watches, in one place. Adding a vendor means: a
@@ -20,6 +22,8 @@ export const VENDOR_BRIEFINGS: Record<Vendor, string> = {
   slack: SLACK_BRIEFING,
   aws: AWS_BRIEFING,
   paypal: PAYPAL_BRIEFING,
+  auth0: AUTH0_BRIEFING,
+  sendgrid: SENDGRID_BRIEFING,
 };
 
 export const VENDOR_SEARCH_TERMS: Record<Vendor, string[]> = {
@@ -30,6 +34,8 @@ export const VENDOR_SEARCH_TERMS: Record<Vendor, string[]> = {
   slack: SLACK_SEARCH_TERMS,
   aws: AWS_SEARCH_TERMS,
   paypal: PAYPAL_SEARCH_TERMS,
+  auth0: AUTH0_SEARCH_TERMS,
+  sendgrid: SENDGRID_SEARCH_TERMS,
 };
 
 export const VENDOR_LABELS: Record<Vendor, string> = {
@@ -40,4 +46,6 @@ export const VENDOR_LABELS: Record<Vendor, string> = {
   slack: "Slack",
   aws: "AWS SDK",
   paypal: "PayPal",
+  auth0: "Auth0",
+  sendgrid: "SendGrid",
 };

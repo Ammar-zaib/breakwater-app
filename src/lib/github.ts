@@ -154,6 +154,45 @@ export async function createRepoWebhook(
   return String(data.id);
 }
 
+/** Whether a branch exists on the repo — used to validate a user-entered branch name before watching it. */
+export async function branchExists(accessToken: string, fullName: string, branch: string): Promise<boolean> {
+  const res = await fetch(`${GITHUB_API}/repos/${fullName}/branches/${encodeURIComponent(branch)}`, {
+    headers: headers(accessToken),
+  });
+  return res.ok;
+}
+
+const SOURCE_FILE_EXTENSIONS = [
+  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+  ".py", ".rb", ".go", ".php", ".java", ".cs",
+];
+
+/**
+ * File paths on a branch, filtered to common source-file extensions and
+ * capped, for scanning a branch GitHub's code-search API can't reach
+ * (search only indexes the default branch). Uses the git trees API with
+ * recursive=1 — one request for the whole tree rather than walking
+ * directories one at a time.
+ */
+export async function fetchBranchFilePaths(
+  accessToken: string,
+  fullName: string,
+  branch: string,
+  maxPaths = 300
+): Promise<string[]> {
+  const res = await fetch(`${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`, {
+    headers: headers(accessToken),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error listing branch tree: ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { tree?: { path: string; type: string }[]; truncated?: boolean };
+  return (data.tree ?? [])
+    .filter((entry) => entry.type === "blob" && SOURCE_FILE_EXTENSIONS.some((ext) => entry.path.endsWith(ext)))
+    .slice(0, maxPaths)
+    .map((entry) => entry.path);
+}
+
 /** Removes a previously-registered webhook. Safe to call even if it's already gone. */
 export async function deleteRepoWebhook(accessToken: string, fullName: string, webhookId: string): Promise<void> {
   const res = await fetch(`${GITHUB_API}/repos/${fullName}/hooks/${webhookId}`, {

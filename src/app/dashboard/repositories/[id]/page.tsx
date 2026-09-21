@@ -4,8 +4,9 @@ import { db } from "@/db";
 import { repos, vendorWatches, scans, users } from "@/db/schema";
 import { getCurrentUser } from "@/lib/current-user";
 import { getRoleForOwner, roleAtLeast } from "@/lib/access";
+import { listAssignableUsers, listIgnoreRules } from "@/app/actions";
 import { PageHeader, Card } from "@/components/ui";
-import { ScanNowButton, DisconnectButton, ScanHistory, PrScanToggle } from "@/components/scan-controls";
+import { ScanNowButton, DisconnectButton, ScanHistory, PrScanToggle, SuppressionRulesList, ExtraBranchControl } from "@/components/scan-controls";
 import { VENDOR_LABELS } from "@/lib/vendors";
 
 export default async function RepositoryDetailPage({
@@ -34,6 +35,8 @@ export default async function RepositoryDetailPage({
     .where(eq(scans.repoId, repo.id))
     .orderBy(desc(scans.createdAt))
     .limit(20);
+  const assignableUsers = canEdit ? await listAssignableUsers(repo.id) : [];
+  const ignoreRuleRows = await listIgnoreRules(repo.id);
 
   return (
     <div>
@@ -63,9 +66,22 @@ export default async function RepositoryDetailPage({
                 : "No scans yet."}
             </p>
           ) : (
-            <ScanHistory scans={scanRows} canEdit={canEdit} />
+            <ScanHistory scans={scanRows} canEdit={canEdit} assignableUsers={assignableUsers} />
           )}
+          <SuppressionRulesList rules={ignoreRuleRows} canEdit={canEdit} />
         </Card>
+
+        {watch && (canManage || repo.extraBranch) ? (
+          <Card className="p-4">
+            <ExtraBranchControl
+              repoId={repo.id}
+              vendor={watch.vendor}
+              initialBranch={repo.extraBranch}
+              canManage={canManage}
+              canEdit={canEdit}
+            />
+          </Card>
+        ) : null}
 
         {canManage ? (
           <div className="flex items-center justify-between">

@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { eq, inArray, desc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db } from "@/db";
-import { repos, vendorWatches, scans } from "@/db/schema";
+import { repos, vendorWatches, scans, users } from "@/db/schema";
 import { getCurrentUser } from "@/lib/current-user";
-import { getOwnerIds } from "@/lib/access";
+import { getActiveWorkspace } from "@/lib/workspace";
 import { PageHeader, Card, RiskPill, EmptyState } from "@/components/ui";
 import { AddRepoDialog } from "@/components/add-repo-dialog";
 import { VENDOR_LABELS } from "@/lib/vendors";
@@ -12,11 +12,15 @@ export default async function RepositoriesPage() {
   const user = await getCurrentUser();
   if (!user) return null;
 
-  const ownerIds = await getOwnerIds(user.id);
+  const workspace = await getActiveWorkspace(user.id);
+  const isOwnAccount = workspace.ownerId === user.id;
+  const [workspaceOwner] = isOwnAccount
+    ? [user]
+    : await db.select().from(users).where(eq(users.id, workspace.ownerId));
   const userRepos = await db
     .select()
     .from(repos)
-    .where(inArray(repos.userId, ownerIds))
+    .where(eq(repos.userId, workspace.ownerId))
     .orderBy(desc(repos.connectedAt));
 
   const rows = await Promise.all(
@@ -36,8 +40,12 @@ export default async function RepositoriesPage() {
     <div>
       <PageHeader
         title="Repositories"
-        description="Every repo Breakwater watches, and what it's watching for."
-        action={<AddRepoDialog />}
+        description={
+          isOwnAccount
+            ? "Every repo Breakwater watches, and what it's watching for."
+            : `Repos on ${workspaceOwner?.email ?? "this account"} — connecting new ones happens from that account's own login.`
+        }
+        action={isOwnAccount ? <AddRepoDialog /> : undefined}
       />
       <div className="p-8">
         <Card>

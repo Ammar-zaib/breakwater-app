@@ -60,6 +60,87 @@ export async function sendSlackAlert(url: string, payload: AlertPayload): Promis
   }
 }
 
+const RISK_COLOR: Record<AlertPayload["overallRisk"], string> = {
+  high: "D64545",
+  medium: "D08A2B",
+  low: "3C9D5C",
+};
+
+/**
+ * POSTs a Microsoft Teams "incoming webhook" using the classic MessageCard
+ * format. Microsoft has been pushing Teams webhooks toward a newer
+ * Workflows/Adaptive-Card model and has published deprecation timelines for
+ * the old Office 365 connector-based webhooks at various points — this is
+ * the widely-supported format as of writing, but if delivery starts
+ * failing for a previously-working URL, that migration is the most likely
+ * cause, and the fix is regenerating the webhook via Teams' Workflows app.
+ */
+export async function sendTeamsAlert(url: string, payload: AlertPayload): Promise<void> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      "@type": "MessageCard",
+      "@context": "http://schema.org/extensions",
+      themeColor: RISK_COLOR[payload.overallRisk],
+      summary: `${payload.overallRisk.toUpperCase()} risk found in ${payload.repoName}`,
+      title: `${payload.overallRisk.toUpperCase()} risk — ${VENDOR_LABELS[payload.vendor]} in ${payload.repoName}`,
+      text: `${payload.summary}\n\n${payload.findingsCount} finding${payload.findingsCount === 1 ? "" : "s"}.`,
+      potentialAction: [
+        {
+          "@type": "OpenUri",
+          name: "View details",
+          targets: [{ os: "default", uri: payload.dashboardUrl }],
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Teams delivery failed: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
+const PAGERDUTY_SEVERITY: Record<AlertPayload["overallRisk"], "critical" | "warning" | "info"> = {
+  high: "critical",
+  medium: "warning",
+  low: "info",
+};
+
+/**
+ * Triggers a PagerDuty incident via the Events API v2. Callers should only
+ * invoke this for high-risk scans — PagerDuty is for pages that justify
+ * waking someone up, not every finding, so gating happens at the call site
+ * (fanOutAlert below) rather than here, to keep that decision visible.
+ */
+export async function sendPagerDutyAlert(integrationKey: string, payload: AlertPayload): Promise<void> {
+  const res = await fetch("https://events.pagerduty.com/v2/enqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      routing_key: integrationKey,
+      event_action: "trigger",
+      // Groups repeat alerts for the same repo+vendor into one ongoing
+      // incident instead of opening a new one every scan.
+      dedup_key: `breakwater:${payload.repoName}:${payload.vendor}`,
+      payload: {
+        summary: `${payload.overallRisk.toUpperCase()} risk — ${VENDOR_LABELS[payload.vendor]} in ${payload.repoName}: ${payload.summary}`,
+        source: payload.repoName,
+        severity: PAGERDUTY_SEVERITY[payload.overallRisk],
+        component: VENDOR_LABELS[payload.vendor],
+        custom_details: {
+          findingsCount: payload.findingsCount,
+          dashboardUrl: payload.dashboardUrl,
+        },
+      },
+      client: "Breakwater",
+      client_url: payload.dashboardUrl,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`PagerDuty delivery failed: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
 /**
  * Fans out to every channel the user has configured. Each channel is
  * independent — one failing doesn't stop the others, and the caller gets
@@ -70,6 +151,8 @@ export async function fanOutAlert(
     to: string | null;
     webhookUrl: string | null;
     slackWebhookUrl: string | null;
+    teamsWebhookUrl?: string | null;
+    pagerDutyIntegrationKey?: string | null;
   },
   payload: AlertPayload,
   sendEmail: (to: string, payload: AlertPayload) => Promise<void>
@@ -95,6 +178,22 @@ export async function fanOutAlert(
       sendSlackAlert(opts.slackWebhookUrl, payload)
         .then(() => ({ channel: "slack", ok: true }))
         .catch((e) => ({ channel: "slack", ok: false, error: e instanceof Error ? e.message : String(e) }))
+    );
+  }
+  if (opts.teamsWebhookUrl) {
+    attempts.push(
+      sendTeamsAlert(opts.teamsWebhookUrl, payload)
+        .then(() => ({ channel: "teams", ok: true }))
+        .catch((e) => ({ channel: "teams", ok: false, error: e instanceof Error ? e.message : String(e) }))
+    );
+  }
+  // Deliberately gated to high risk only, even if a key is configured —
+  // paging someone for a medium/low finding trains them to ignore pages.
+  if (opts.pagerDutyIntegrationKey && payload.overallRisk === "high") {
+    attempts.push(
+      sendPagerDutyAlert(opts.pagerDutyIntegrationKey, payload)
+        .then(() => ({ channel: "pagerduty", ok: true }))
+        .catch((e) => ({ channel: "pagerduty", ok: false, error: e instanceof Error ? e.message : String(e) }))
     );
   }
 

@@ -20,6 +20,9 @@ const ReportSchema = z.object({
 
 export type ScanReport = z.infer<typeof ReportSchema>;
 
+export type ScanUsage = { inputTokens: number; outputTokens: number; model: string };
+export type ScanResult = { report: ScanReport; usage: ScanUsage };
+
 const RULES = `
 Rules:
 - Only report a finding if it is actually evidenced by something present in the pasted code below. Never invent a vendor behavior that isn't in the briefing above.
@@ -38,13 +41,18 @@ export async function runScan(
   anthropicApiKey: string,
   vendor: Vendor,
   files: { path: string; content: string }[]
-): Promise<ScanReport> {
+): Promise<ScanResult> {
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+
   if (files.length === 0) {
     return {
-      overallRisk: "low",
-      summary:
-        "No files matching this vendor's SDK were found in the repository, so nothing was scanned.",
-      findings: [],
+      report: {
+        overallRisk: "low",
+        summary:
+          "No files matching this vendor's SDK were found in the repository, so nothing was scanned.",
+        findings: [],
+      },
+      usage: { inputTokens: 0, outputTokens: 0, model },
     };
   }
 
@@ -67,7 +75,7 @@ export async function runScan(
     // Configurable because Anthropic model names change over time — check
     // https://docs.claude.com/en/docs/about-claude/models for the current
     // slug and set ANTHROPIC_MODEL if this default has aged out.
-    model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
+    model,
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
@@ -82,7 +90,14 @@ export async function runScan(
       `Model response didn't match the expected report shape: ${result.error.message}`
     );
   }
-  return result.data;
+  return {
+    report: result.data,
+    usage: {
+      inputTokens: message.usage.input_tokens,
+      outputTokens: message.usage.output_tokens,
+      model,
+    },
+  };
 }
 
 function extractJson(text: string): unknown {

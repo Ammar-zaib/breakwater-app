@@ -3,7 +3,7 @@ import { eq, inArray, desc, and, gte } from "drizzle-orm";
 import { db } from "@/db";
 import { repos, scans, vendorWatches, findings } from "@/db/schema";
 import { getCurrentUser } from "@/lib/current-user";
-import { getOwnerIds } from "@/lib/access";
+import { getActiveWorkspace } from "@/lib/workspace";
 import { PageHeader, Card, RiskPill, EmptyState } from "@/components/ui";
 import { VENDOR_LABELS } from "@/lib/vendors";
 import { RiskTrendChart, type TrendDay } from "@/components/risk-trend-chart";
@@ -14,8 +14,8 @@ export default async function OverviewPage() {
   const user = await getCurrentUser();
   if (!user) return null;
 
-  const ownerIds = await getOwnerIds(user.id);
-  const userRepos = await db.select().from(repos).where(inArray(repos.userId, ownerIds));
+  const workspace = await getActiveWorkspace(user.id);
+  const userRepos = await db.select().from(repos).where(eq(repos.userId, workspace.ownerId));
   const repoIds = userRepos.map((r) => r.id);
 
   const repoLatest = await Promise.all(
@@ -99,6 +99,12 @@ export default async function OverviewPage() {
               className="text-sm font-medium text-ink-dim hover:text-ink transition-colors"
             >
               Export CSV
+            </a>
+            <a
+              href="/api/reports/risk"
+              className="text-sm font-medium text-ink-dim hover:text-ink transition-colors"
+            >
+              Download PDF report
             </a>
             <Link
               href="/dashboard/repositories"

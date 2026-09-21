@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { triggerScan, disconnectRepo, getScanDetail, togglePrScan } from "@/app/actions";
+import { triggerScan, disconnectRepo, getScanDetail, togglePrScan, deleteIgnoreRule, setExtraBranch, triggerBranchScan } from "@/app/actions";
 import { RiskPill, FindingCard } from "@/components/ui";
 import type { Vendor } from "@/db/schema";
 
@@ -96,12 +96,161 @@ export function PrScanToggle({ repoId, enabled }: { repoId: string; enabled: boo
   );
 }
 
+export function ExtraBranchControl({
+  repoId,
+  vendor,
+  initialBranch,
+  canManage,
+  canEdit,
+}: {
+  repoId: string;
+  vendor: Vendor;
+  initialBranch: string | null;
+  canManage: boolean;
+  canEdit: boolean;
+}) {
+  const [isPending, startTransition] = useTransition();
+  const [branch, setBranch] = useState(initialBranch ?? "");
+  const [savedBranch, setSavedBranch] = useState(initialBranch);
+  const [error, setError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const router = useRouter();
+
+  function handleSave() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setExtraBranch(repoId, branch);
+        setSavedBranch(branch.trim() || null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Couldn't update the watched branch.");
+      }
+    });
+  }
+
+  function handleScan() {
+    setScanError(null);
+    startTransition(async () => {
+      try {
+        await triggerBranchScan(repoId, vendor);
+        router.refresh();
+      } catch (e) {
+        setScanError(e instanceof Error ? e.message : "Branch scan failed.");
+      }
+    });
+  }
+
+  if (!canManage && !savedBranch) return null;
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <label className="text-[11px] text-ink-dim shrink-0" htmlFor="extra-branch-input">
+        Also watch branch:
+      </label>
+      {canManage ? (
+        <>
+          <input
+            id="extra-branch-input"
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+            placeholder="e.g. release"
+            className="text-[12px] bg-surface-2 border border-line rounded-md px-2 py-1 text-ink w-32"
+          />
+          <button
+            onClick={handleSave}
+            disabled={isPending || branch === (savedBranch ?? "")}
+            className="text-[11px] font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+          >
+            Save
+          </button>
+        </>
+      ) : (
+        <span className="text-[12px] font-mono">{savedBranch}</span>
+      )}
+      {savedBranch && canEdit ? (
+        <button
+          onClick={handleScan}
+          disabled={isPending}
+          className="text-[11px] font-semibold text-accent hover:underline disabled:opacity-50"
+        >
+          {isPending ? "Scanning…" : "Scan branch now"}
+        </button>
+      ) : null}
+      {error ? <span className="text-[11px] text-high">{error}</span> : null}
+      {scanError ? <span className="text-[11px] text-high">{scanError}</span> : null}
+    </div>
+  );
+}
+
+type IgnoreRuleRow = {
+  id: string;
+  vendor: string | null;
+  titleContains: string | null;
+  filePathContains: string | null;
+  reason: string | null;
+  createdAt: Date;
+};
+
+export function SuppressionRulesList({ rules: initial, canEdit }: { rules: IgnoreRuleRow[]; canEdit: boolean }) {
+  const [rules, setRules] = useState(initial);
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  if (rules.length === 0) return null;
+
+  function handleDelete(id: string) {
+    if (!confirm("Remove this suppression rule? Future scans will start flagging matching findings again.")) return;
+    setError(null);
+    startTransition(async () => {
+      try {
+        await deleteIgnoreRule(id);
+        setRules((prev) => prev.filter((r) => r.id !== id));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Couldn't remove that rule.");
+      }
+    });
+  }
+
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-semibold text-ink-dim uppercase tracking-wide mb-2">Suppression rules</h3>
+      <ul className="space-y-1.5">
+        {rules.map((rule) => (
+          <li
+            key={rule.id}
+            className="flex items-center justify-between gap-3 text-[12px] border border-line rounded-lg px-3 py-2"
+          >
+            <span className="min-w-0 truncate text-ink-dim">
+              {rule.titleContains ? `"${rule.titleContains}"` : "any title"}
+              {rule.filePathContains ? ` in ${rule.filePathContains}` : ""}
+              {rule.reason ? ` — ${rule.reason}` : ""}
+            </span>
+            {canEdit ? (
+              <button
+                onClick={() => handleDelete(rule.id)}
+                disabled={isPending}
+                className="text-[11px] font-medium text-high hover:underline disabled:opacity-50 shrink-0"
+              >
+                Remove
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {error ? <p className="mt-1.5 text-[11px] text-high">{error}</p> : null}
+    </div>
+  );
+}
+
 type ScanRow = {
   id: string;
   overallRisk: string;
   summary: string;
   triggeredBy: string;
   createdAt: Date;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  estimatedCostUsd?: number | null;
 };
 
 type FindingRow = {
@@ -117,9 +266,19 @@ type FindingRow = {
   prError?: string | null;
   status?: string | null;
   acceptedReason?: string | null;
+  assignedTo?: string | null;
+  assigneeEmail?: string | null;
 };
 
-export function ScanHistory({ scans, canEdit = true }: { scans: ScanRow[]; canEdit?: boolean }) {
+export function ScanHistory({
+  scans,
+  canEdit = true,
+  assignableUsers = [],
+}: {
+  scans: ScanRow[];
+  canEdit?: boolean;
+  assignableUsers?: { id: string; email: string | null }[];
+}) {
   const [selected, setSelected] = useState<ScanRow | null>(scans[0] ?? null);
   // Cache of findings per scan id, so switching back to an already-viewed
   // scan doesn't refetch. `loading` is derived, not stored — the effect
@@ -172,12 +331,20 @@ export function ScanHistory({ scans, canEdit = true }: { scans: ScanRow[]; canEd
         {selected ? (
           <div>
             <p className="text-sm text-ink-dim mb-4">{selected.summary}</p>
+            {typeof selected.estimatedCostUsd === "number" ? (
+              <p className="text-[11px] text-ink-dim mb-4 -mt-2">
+                ~${selected.estimatedCostUsd < 0.01 ? "<0.01" : selected.estimatedCostUsd.toFixed(2)} estimated
+                {selected.inputTokens != null && selected.outputTokens != null
+                  ? ` · ${(selected.inputTokens + selected.outputTokens).toLocaleString()} tokens`
+                  : ""}
+              </p>
+            ) : null}
             {loading ? (
               <p className="text-sm text-ink-dim">Loading findings…</p>
             ) : findings && findings.length > 0 ? (
               <div className="space-y-3">
                 {findings.map((f) => (
-                  <FindingCard key={f.id} finding={f} canEdit={canEdit} />
+                  <FindingCard key={f.id} finding={f} canEdit={canEdit} assignableUsers={assignableUsers} />
                 ))}
               </div>
             ) : (

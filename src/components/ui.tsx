@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { openFixPR, acceptFinding, reopenFinding } from "@/app/actions";
+import { openFixPR, acceptFinding, reopenFinding, assignFinding, quickSuppressFinding } from "@/app/actions";
 
 type Risk = "high" | "medium" | "low";
 
@@ -75,6 +75,7 @@ const SEV_TEXT: Record<Risk, string> = {
 export function FindingCard({
   finding,
   canEdit = true,
+  assignableUsers = [],
 }: {
   finding: {
     id: string;
@@ -89,9 +90,13 @@ export function FindingCard({
     prError?: string | null;
     status?: string | null;
     acceptedReason?: string | null;
+    assignedTo?: string | null;
+    assigneeEmail?: string | null;
   };
   /** Viewers can see PR status but not trigger a new fix PR. */
   canEdit?: boolean;
+  /** Owner + accepted team members, for the "Assign to" dropdown. Omit to hide assignment entirely. */
+  assignableUsers?: { id: string; email: string | null }[];
 }) {
   const sev = (["high", "medium", "low"].includes(finding.severity) ? finding.severity : "low") as Risk;
   const [isPending, startTransition] = useTransition();
@@ -101,6 +106,9 @@ export function FindingCard({
   const [status, setStatus] = useState(finding.status ?? "open");
   const [acceptedReason, setAcceptedReason] = useState(finding.acceptedReason ?? null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  const [assignedTo, setAssignedTo] = useState(finding.assignedTo ?? null);
+  const [assigneeEmail, setAssigneeEmail] = useState(finding.assigneeEmail ?? null);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   function handleOpenFixPR() {
     setPrStatus("generating");
@@ -148,13 +156,47 @@ export function FindingCard({
     });
   }
 
+  function handleSuppress() {
+    const reason = window.prompt(
+      "Create a standing rule so future scans of this repo don't re-flag findings like this one (matches on title" +
+        (finding.filePath ? " and file path" : "") +
+        "). Optional note:",
+      ""
+    );
+    if (reason === null) return; // cancelled
+    setAcceptError(null);
+    startTransition(async () => {
+      try {
+        await quickSuppressFinding(finding.id, reason);
+        setStatus("suppressed");
+      } catch (e) {
+        setAcceptError(e instanceof Error ? e.message : "Couldn't create the suppression rule.");
+      }
+    });
+  }
+
+  function handleAssignChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = e.target.value || null;
+    const match = assignableUsers.find((u) => u.id === value);
+    setAssignError(null);
+    startTransition(async () => {
+      try {
+        await assignFinding(finding.id, value);
+        setAssignedTo(value);
+        setAssigneeEmail(match?.email ?? null);
+      } catch (err) {
+        setAssignError(err instanceof Error ? err.message : "Couldn't update the assignee.");
+      }
+    });
+  }
+
   return (
     <div
       className={`grid grid-cols-[4px_1fr] gap-3.5 border border-line rounded-xl overflow-hidden bg-surface ${
-        status === "accepted" ? "opacity-70" : ""
+        status !== "open" ? "opacity-70" : ""
       }`}
     >
-      <div className={status === "accepted" ? "bg-ink-dim" : SEV_STRIPE[sev]} />
+      <div className={status !== "open" ? "bg-ink-dim" : SEV_STRIPE[sev]} />
       <div className="py-3 pr-4">
         <div className="flex items-baseline justify-between gap-2">
           <span className="font-medium text-sm">{finding.title}</span>
@@ -162,6 +204,10 @@ export function FindingCard({
             {status === "accepted" ? (
               <span className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-dim">
                 accepted risk
+              </span>
+            ) : status === "suppressed" ? (
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-dim">
+                suppressed
               </span>
             ) : null}
             <span className={`font-mono text-[10px] font-bold uppercase tracking-wide ${SEV_TEXT[sev]}`}>
@@ -185,6 +231,9 @@ export function FindingCard({
         {status === "accepted" && acceptedReason ? (
           <p className="mt-2 text-[12px] text-ink-dim italic">Accepted: {acceptedReason}</p>
         ) : null}
+        {status === "suppressed" ? (
+          <p className="mt-2 text-[12px] text-ink-dim italic">Suppressed by a standing rule for this repo.</p>
+        ) : null}
 
         {finding.filePath && (canEdit || (prStatus === "open" && prUrl)) ? (
           <div className="mt-3 pt-3 border-t border-line flex items-center gap-3 flex-wrap">
@@ -197,7 +246,7 @@ export function FindingCard({
               >
                 View fix PR ↗
               </a>
-            ) : canEdit && status !== "accepted" ? (
+            ) : canEdit && status === "open" ? (
               <button
                 onClick={handleOpenFixPR}
                 disabled={isPending || prStatus === "generating"}
@@ -213,7 +262,7 @@ export function FindingCard({
             {canEdit && prStatus === "error" && prError ? (
               <span className="text-[11px] text-high">{prError}</span>
             ) : null}
-            {canEdit && prStatus !== "open" && status !== "accepted" ? (
+            {canEdit && prStatus !== "open" && status === "open" ? (
               <span className="text-[10.5px] text-ink-dim">
                 Asks Claude to fix this file and opens a real PR for you to review — nothing merges automatically.
               </span>
@@ -223,7 +272,7 @@ export function FindingCard({
 
         {canEdit ? (
           <div className="mt-3 pt-3 border-t border-line flex items-center gap-3 flex-wrap">
-            {status === "accepted" ? (
+            {status !== "open" ? (
               <button
                 onClick={handleReopen}
                 disabled={isPending}
@@ -232,16 +281,50 @@ export function FindingCard({
                 Reopen
               </button>
             ) : (
-              <button
-                onClick={handleAccept}
-                disabled={isPending}
-                className="text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
-              >
-                Accept risk
-              </button>
+              <>
+                <button
+                  onClick={handleAccept}
+                  disabled={isPending}
+                  className="text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+                >
+                  Accept risk
+                </button>
+                <button
+                  onClick={handleSuppress}
+                  disabled={isPending}
+                  className="text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+                >
+                  Suppress similar findings
+                </button>
+              </>
             )}
             {acceptError ? <span className="text-[11px] text-high">{acceptError}</span> : null}
+
+            {assignableUsers.length > 0 ? (
+              <span className="flex items-center gap-1.5 ml-auto">
+                <label className="text-[10.5px] text-ink-dim" htmlFor={`assign-${finding.id}`}>
+                  Assign:
+                </label>
+                <select
+                  id={`assign-${finding.id}`}
+                  value={assignedTo ?? ""}
+                  onChange={handleAssignChange}
+                  disabled={isPending}
+                  className="text-[11px] bg-surface-2 border border-line rounded-md px-1.5 py-1 text-ink disabled:opacity-50"
+                >
+                  <option value="">Unassigned</option>
+                  {assignableUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.email ?? u.id}
+                    </option>
+                  ))}
+                </select>
+                {assignError ? <span className="text-[11px] text-high">{assignError}</span> : null}
+              </span>
+            ) : null}
           </div>
+        ) : assigneeEmail ? (
+          <p className="mt-3 pt-3 border-t border-line text-[11px] text-ink-dim">Assigned: {assigneeEmail}</p>
         ) : null}
       </div>
     </div>

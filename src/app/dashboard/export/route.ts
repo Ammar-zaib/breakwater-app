@@ -34,7 +34,10 @@ export async function GET(req: NextRequest) {
   }
 
   if (scopeRepoIds.length === 0) {
-    return csvResponse("repository,vendor,scanned_at,triggered_by,overall_risk,findings_count,summary\n", filenameHint);
+    return csvResponse(
+      "repository,vendor,scanned_at,triggered_by,overall_risk,findings_count,input_tokens,output_tokens,estimated_cost_usd,summary\n",
+      filenameHint
+    );
   }
 
   const rows = await db
@@ -45,6 +48,9 @@ export async function GET(req: NextRequest) {
       triggeredBy: scans.triggeredBy,
       summary: scans.summary,
       createdAt: scans.createdAt,
+      inputTokens: scans.inputTokens,
+      outputTokens: scans.outputTokens,
+      estimatedCostUsd: scans.estimatedCostUsd,
       findingsCount: count(findings.id),
     })
     .from(scans)
@@ -54,7 +60,8 @@ export async function GET(req: NextRequest) {
     .groupBy(scans.id, repos.id)
     .orderBy(desc(scans.createdAt));
 
-  const header = "repository,vendor,scanned_at,triggered_by,overall_risk,findings_count,summary";
+  const header =
+    "repository,vendor,scanned_at,triggered_by,overall_risk,findings_count,input_tokens,output_tokens,estimated_cost_usd,summary";
   const lines = rows.map((r) =>
     [
       r.repoFullName,
@@ -63,6 +70,9 @@ export async function GET(req: NextRequest) {
       r.triggeredBy,
       r.overallRisk,
       String(r.findingsCount),
+      r.inputTokens != null ? String(r.inputTokens) : "",
+      r.outputTokens != null ? String(r.outputTokens) : "",
+      r.estimatedCostUsd != null ? r.estimatedCostUsd.toFixed(4) : "",
       r.summary,
     ]
       .map(csvEscape)

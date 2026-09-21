@@ -1,4 +1,6 @@
 import { listAuditLog } from "@/app/actions";
+import { getCurrentUser } from "@/lib/current-user";
+import { getActiveWorkspace } from "@/lib/workspace";
 import { PageHeader, Card, EmptyState } from "@/components/ui";
 
 const ACTION_LABELS: Record<string, string> = {
@@ -8,12 +10,19 @@ const ACTION_LABELS: Record<string, string> = {
   "settings.anthropic_key_update": "Updated Anthropic API key",
   "settings.alert_email_update": "Updated alert email",
   "settings.webhook_update": "Updated webhook settings",
+  "settings.digest_update": "Changed weekly digest preference",
   "finding.pr_open": "Opened a fix PR",
   "finding.pr_open_failed": "Fix PR failed to open",
   "finding.accept": "Accepted a finding",
   "finding.reopen": "Reopened a finding",
+  "finding.assign": "Assigned a finding",
+  "finding.unassign": "Unassigned a finding",
+  "ignore_rule.create": "Created a suppression rule",
+  "ignore_rule.delete": "Removed a suppression rule",
   "repo.prscan_enable": "Enabled PR-triggered scanning",
   "repo.prscan_disable": "Disabled PR-triggered scanning",
+  "repo.extra_branch_set": "Set the watched extra branch",
+  "repo.extra_branch_clear": "Cleared the watched extra branch",
   "team.invite": "Invited a team member",
   "team.role_change": "Changed a team member's role",
   "team.remove": "Removed a team member",
@@ -43,6 +52,13 @@ function describeMetadata(action: string, metadata: unknown): string | null {
     case "finding.pr_open":
     case "finding.pr_open_failed":
       return typeof m.filePath === "string" ? m.filePath : null;
+    case "finding.assign":
+    case "finding.unassign":
+      return [m.title, m.assigneeEmail].filter(Boolean).join(" · ");
+    case "ignore_rule.create":
+      return [m.fullName, m.title].filter(Boolean).join(" · ");
+    case "ignore_rule.delete":
+      return [m.fullName, m.titleContains].filter(Boolean).join(" · ");
     case "team.invite":
       return [m.email, m.role].filter(Boolean).join(" · ");
     case "team.role_change":
@@ -55,16 +71,25 @@ function describeMetadata(action: string, metadata: unknown): string | null {
     case "repo.prscan_enable":
     case "repo.prscan_disable":
       return typeof m.fullName === "string" ? m.fullName : null;
+    case "repo.extra_branch_set":
+    case "repo.extra_branch_clear":
+      return [m.fullName, m.branch].filter(Boolean).join(" · ");
+    case "settings.digest_update":
+      return m.enabled === true ? "Enabled" : m.enabled === false ? "Disabled" : null;
     default:
       return null;
   }
 }
 
 export default async function AuditLogPage() {
+  const user = await getCurrentUser();
+  if (!user) return null;
+  const workspace = await getActiveWorkspace(user.id);
+
   let entries: Awaited<ReturnType<typeof listAuditLog>> = [];
   let error: string | null = null;
   try {
-    entries = await listAuditLog();
+    entries = await listAuditLog(workspace.ownerId);
   } catch (e) {
     error = e instanceof Error ? e.message : "Couldn't load the audit log.";
   }

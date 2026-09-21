@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { auth, signOut } from "@/auth";
+import { auth, signIn, signOut } from "@/auth";
 import { Logo } from "@/components/logo";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
+import { getWorkspaceOptions, getActiveWorkspace } from "@/lib/workspace";
+import { hasGitHubAccount } from "@/lib/current-user";
 
 const NAV = [
   {
@@ -67,7 +70,13 @@ const NAV = [
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
-  if (!session?.user) redirect("/login");
+  if (!session?.user?.id) redirect("/login");
+
+  const [workspaceOptions, activeWorkspace, hasGitHub] = await Promise.all([
+    getWorkspaceOptions(session.user.id),
+    getActiveWorkspace(session.user.id),
+    hasGitHubAccount(session.user.id),
+  ]);
 
   return (
     <div className="flex-1 flex bg-bg">
@@ -75,6 +84,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="px-5 py-5 border-b border-line">
           <Logo className="text-base" />
         </div>
+        <WorkspaceSwitcher options={workspaceOptions} activeOwnerId={activeWorkspace.ownerId} />
         <nav className="flex-1 px-3 py-4 space-y-0.5">
           {NAV.map((item) => (
             <Link
@@ -112,7 +122,30 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </form>
         </div>
       </aside>
-      <main className="flex-1 min-w-0">{children}</main>
+      <main className="flex-1 min-w-0 flex flex-col">
+        {!hasGitHub ? (
+          <div className="px-6 py-3 bg-medium-bg border-b border-medium/30 flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-sm text-medium">
+              Connect your GitHub account to start scanning repos — signing in with Google or
+              Microsoft covers your identity, but repo access is a separate grant.
+            </p>
+            <form
+              action={async () => {
+                "use server";
+                await signIn("github", { redirectTo: "/dashboard" });
+              }}
+            >
+              <button
+                type="submit"
+                className="text-xs font-semibold bg-medium text-accent-ink rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity shrink-0"
+              >
+                Connect GitHub
+              </button>
+            </form>
+          </div>
+        ) : null}
+        <div className="flex-1 min-w-0">{children}</div>
+      </main>
     </div>
   );
 }

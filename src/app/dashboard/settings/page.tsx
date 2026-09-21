@@ -7,6 +7,7 @@ import {
   TestAlertButton,
   ApiKeysManager,
   WebhookSettingsForm,
+  DigestPreferenceToggle,
 } from "@/components/settings-form";
 
 export default async function SettingsPage() {
@@ -30,14 +31,26 @@ export default async function SettingsPage() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="text-sm font-semibold mb-1">Webhook &amp; Slack alerts</h2>
+          <h2 className="text-sm font-semibold mb-1">Webhook, Slack, Teams &amp; PagerDuty alerts</h2>
           <p className="text-sm text-ink-dim mb-3">
-            Get the same alert Breakwater emails you, POSTed as JSON or dropped into a Slack channel.
+            Get the same alert Breakwater emails you, POSTed as JSON, dropped into a Slack or Teams channel, or
+            paged through PagerDuty (high-risk findings only, to avoid alert fatigue).
           </p>
           <WebhookSettingsForm
             webhookUrl={user.webhookUrl || ""}
             slackWebhookUrl={user.slackWebhookUrl || ""}
+            teamsWebhookUrl={user.teamsWebhookUrl || ""}
+            pagerDutyIntegrationKey={user.pagerDutyIntegrationKey || ""}
           />
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="text-sm font-semibold mb-1">Weekly digest</h2>
+          <p className="text-sm text-ink-dim mb-3">
+            A once-a-week email summarizing your account&apos;s risk posture — separate from the real-time alerts
+            above.
+          </p>
+          <DigestPreferenceToggle initialEnabled={user.weeklyDigestEnabled} />
         </Card>
 
         <Card className="p-5">

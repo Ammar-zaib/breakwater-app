@@ -6,6 +6,7 @@ import {
   primaryKey,
   boolean,
   jsonb,
+  doublePrecision,
 } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
@@ -27,6 +28,21 @@ export const users = pgTable("user", {
   alertEmail: text("alert_email"), // defaults to `email` if null
   webhookUrl: text("webhook_url"), // optional extra alert destination — POSTed JSON
   slackWebhookUrl: text("slack_webhook_url"), // optional Slack incoming-webhook URL
+  // Microsoft Teams incoming webhook (classic "MessageCard" JSON format).
+  // Note: Microsoft has been migrating Teams webhooks toward a
+  // Workflows/Adaptive-Card model and has at various points announced
+  // retirement timelines for the old connector-based webhooks — if a URL
+  // here starts failing, that's the most likely cause; see sendTeamsAlert
+  // in src/lib/alerts.ts.
+  teamsWebhookUrl: text("teams_webhook_url"),
+  // PagerDuty Events API v2 integration key (from a PagerDuty "Events API
+  // v2" service integration). Only fires for high-risk scans, deliberately
+  // — PagerDuty is for pages, not every medium/low finding.
+  pagerDutyIntegrationKey: text("pagerduty_integration_key"),
+  // Weekly risk-posture summary email (see /api/cron/digest), independent
+  // of the per-scan alert channels above — on by default since it's a
+  // low-noise once-a-week email, opt-out rather than opt-in.
+  weeklyDigestEnabled: boolean("weekly_digest_enabled").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -84,6 +100,8 @@ export const VENDORS = [
   "slack",
   "aws",
   "paypal",
+  "auth0",
+  "sendgrid",
 ] as const;
 export type Vendor = (typeof VENDORS)[number];
 
@@ -104,6 +122,11 @@ export const repos = pgTable("repo", {
   // pull_request events run a PR-scoped scan that comments findings inline.
   prScanEnabled: boolean("pr_scan_enabled").notNull().default(false),
   githubWebhookId: text("github_webhook_id"),
+  // Optional second branch to watch beyond the default branch (e.g. a
+  // long-lived release/staging branch). Scanned the same way as a PR — a
+  // direct tree walk + content match, not GitHub code search, since search
+  // only indexes the default branch.
+  extraBranch: text("extra_branch"),
 });
 
 export const vendorWatches = pgTable("vendor_watch", {
@@ -131,6 +154,14 @@ export const scans = pgTable("scan", {
   filesScanned: jsonb("files_scanned").$type<string[]>().notNull(),
   triggeredBy: text("triggered_by").notNull(), // 'manual' | 'cron' | 'pr'
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Anthropic usage for this scan's model call — lets an account see roughly
+  // what its own scanning is costing on its own API key. estimatedCostUsd is
+  // a directional estimate from a hardcoded rate table (src/lib/cost.ts),
+  // not a billing-accurate figure — Anthropic's actual pricing is the source
+  // of truth.
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  estimatedCostUsd: doublePrecision("estimated_cost_usd"),
 });
 
 export const findings = pgTable("finding", {
@@ -154,10 +185,46 @@ export const findings = pgTable("finding", {
   // Accept/dismiss: a reviewed finding an editor+ has decided not to act on
   // (accepted risk, false positive, etc). Accepted findings stay in history
   // but are excluded from "effective risk" counts on dashboards.
-  status: text("status").notNull().default("open"), // 'open' | 'accepted'
+  status: text("status").notNull().default("open"), // 'open' | 'accepted' | 'suppressed'
   acceptedBy: text("accepted_by").references(() => users.id, { onDelete: "set null" }),
   acceptedAt: timestamp("accepted_at"),
   acceptedReason: text("accepted_reason"),
+  // Triage: routing a finding to a specific teammate to work on. Purely
+  // informational — doesn't grant them any extra access beyond their
+  // existing role on the account.
+  assignedTo: text("assigned_to").references(() => users.id, { onDelete: "set null" }),
+  assignedAt: timestamp("assigned_at"),
+  // Set when a standing suppression rule (see ignoreRules below) auto-hid
+  // this finding at scan time, so the UI can explain why without the user
+  // having dismissed it themselves.
+  suppressedByRuleId: text("suppressed_by_rule_id"),
+});
+
+/**
+ * A standing rule an editor+ creates so future scans stop re-surfacing a
+ * known/accepted pattern automatically, instead of accepting the same kind
+ * of finding scan after scan. Matched at scan-persist time (see
+ * applySuppressionRules in scan-runner.ts) against a finding's vendor,
+ * title, and file path.
+ */
+export const ignoreRules = pgTable("ignore_rule", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  repoId: text("repo_id")
+    .notNull()
+    .references(() => repos.id, { onDelete: "cascade" }),
+  vendor: text("vendor").$type<Vendor>(),
+  // Case-insensitive substring match against a finding's title. Null means
+  // "any title" (only vendor/filePathPattern narrow the match).
+  titleContains: text("title_contains"),
+  // Case-insensitive substring match against a finding's file path.
+  filePathContains: text("file_path_contains"),
+  reason: text("reason"),
+  createdBy: text("created_by")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 /**
